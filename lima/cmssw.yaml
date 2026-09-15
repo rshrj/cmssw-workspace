@@ -114,6 +114,7 @@ provision:
         curl \
         wget \
         openssh-clients \
+        ncurses \
         tar \
         gzip \
         bzip2 \

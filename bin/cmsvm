@@ -3,6 +3,7 @@
 set -euo pipefail
 
 INSTANCE="${CMSSW_LIMA_INSTANCE:-cmssw}"
+SSH_ALIAS="lima-${INSTANCE}"
 
 SCRIPT_DIR="$(
   cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -15,11 +16,14 @@ REPO_ROOT="$(
 )"
 
 TEMPLATE="$REPO_ROOT/lima/cmssw.yaml"
+LIMA_SSH_CONFIG="$HOME/.lima/$INSTANCE/ssh.config"
+
 
 usage() {
   cat <<EOF
 Usage:
 
+  cmsvm host-setup
   cmsvm validate
   cmsvm create
   cmsvm start
@@ -27,6 +31,8 @@ Usage:
   cmsvm ssh
   cmsvm stop
   cmsvm status
+  cmsvm doctor
+  cmsvm terminfo
   cmsvm delete
 
 Instance:
@@ -37,24 +43,230 @@ Template:
 EOF
 }
 
+
+ensure_lima_ssh_include() {
+  local ssh_dir="$HOME/.ssh"
+  local ssh_config="$ssh_dir/config"
+  local include_line='Include ~/.lima/*/ssh.config'
+  local tmp
+
+  mkdir -p "$ssh_dir"
+  chmod 700 "$ssh_dir"
+
+  touch "$ssh_config"
+  chmod 600 "$ssh_config"
+
+  tmp="$(mktemp)"
+
+  # The Include must be outside any Host stanza.
+  # Putting it first guarantees that.
+  {
+    printf '%s\n\n' "$include_line"
+    grep -vFx "$include_line" "$ssh_config" || true
+  } > "$tmp"
+
+  cat "$tmp" > "$ssh_config"
+  rm -f "$tmp"
+
+  chmod 600 "$ssh_config"
+}
+
+
+close_lima_controlmaster() {
+  if [[ ! -f "$LIMA_SSH_CONFIG" ]]; then
+    return 0
+  fi
+
+  # Lima may have opened its persistent SSH connection before guest
+  # provisioning changed the account login shell to zsh.
+  #
+  # Closing it forces the next session to re-read /etc/passwd.
+  ssh \
+    -F "$LIMA_SSH_CONFIG" \
+    -O exit \
+    "$SSH_ALIAS" \
+    >/dev/null 2>&1 || true
+}
+
+
+install_host_terminfo() {
+  if [[ ! -f "$LIMA_SSH_CONFIG" ]]; then
+    echo "Lima SSH config not found: $LIMA_SSH_CONFIG" >&2
+    return 1
+  fi
+
+  # Ghostty advertises xterm-ghostty. AlmaLinux 9's ncurses is old enough
+  # that this terminfo is generally not installed system-wide.
+  #
+  # Install the host's exact definition into the guest user's private
+  # terminfo database.
+  if [[ "${TERM:-}" == "xterm-ghostty" ]]; then
+
+    if ! command -v infocmp >/dev/null 2>&1; then
+      echo "warning: host infocmp not found; skipping Ghostty terminfo setup" >&2
+      return 0
+    fi
+
+    if ! infocmp -x xterm-ghostty >/dev/null 2>&1; then
+      echo "warning: host xterm-ghostty terminfo unavailable; skipping" >&2
+      return 0
+    fi
+
+    echo "==> Installing Ghostty terminfo in guest"
+
+    infocmp -x xterm-ghostty |
+      ssh \
+        -F "$LIMA_SSH_CONFIG" \
+        "$SSH_ALIAS" \
+        'mkdir -p "$HOME/.terminfo" && tic -x -o "$HOME/.terminfo" -'
+
+  fi
+}
+
+
+run_doctor() {
+  echo "==> Host"
+
+  printf 'limactl: '
+  limactl --version
+
+  printf 'architecture: '
+  uname -m
+
+  printf 'terminal: '
+  printf '%s\n' "${TERM:-unset}"
+
+  echo
+  echo "==> Lima template"
+
+  limactl validate "$TEMPLATE"
+
+  echo
+  echo "==> Instance"
+
+  limactl list "$INSTANCE"
+
+  if [[ ! -f "$LIMA_SSH_CONFIG" ]]; then
+    echo
+    echo "ERROR: Lima SSH config does not exist:"
+    echo "  $LIMA_SSH_CONFIG"
+    exit 1
+  fi
+
+  echo
+  echo "==> SSH resolution"
+
+  ssh -G "$SSH_ALIAS" |
+    awk '
+      $1 == "hostname" ||
+      $1 == "user" ||
+      $1 == "port" ||
+      $1 == "identityfile"
+    '
+
+  echo
+  echo "==> Guest"
+
+  ssh "$SSH_ALIAS" '
+    set -e
+
+    printf "OS: "
+    cat /etc/almalinux-release
+
+    printf "architecture: "
+    uname -m
+
+    printf "login shell: "
+    getent passwd "$USER" | cut -d: -f7
+
+    printf "home: "
+    printf "%s\n" "$HOME"
+
+    printf "zsh: "
+    command -v zsh
+
+    printf "git: "
+    git --version
+
+    printf "nvim: "
+    nvim --version | head -1
+
+    printf "tmux: "
+    tmux -V
+
+    if [[ "${TERM:-}" == "xterm-ghostty" ]]; then
+      printf "Ghostty terminfo: "
+      if infocmp xterm-ghostty >/dev/null 2>&1; then
+        echo "OK"
+      else
+        echo "MISSING"
+        exit 1
+      fi
+    fi
+  '
+
+  echo
+  echo "CMSSW VM checks passed."
+}
+
+
 case "${1:-}" in
+
+  host-setup)
+    echo "==> Configuring host SSH"
+    ensure_lima_ssh_include
+    ;;
 
   validate)
     limactl validate "$TEMPLATE"
     ;;
 
   create)
+    echo "==> Configuring host SSH"
+    ensure_lima_ssh_include
+
     echo "==> Validating Lima template"
     limactl validate "$TEMPLATE"
 
+    if [[ -e "$HOME/.lima/$INSTANCE" ]]; then
+      echo "ERROR: Lima instance '$INSTANCE' already exists." >&2
+      echo "Delete it first with: cmsvm delete" >&2
+      exit 1
+    fi
+
     echo "==> Creating Lima instance: $INSTANCE"
+
     limactl create \
       --tty=false \
       --name="$INSTANCE" \
       "$TEMPLATE"
 
     echo "==> Starting and provisioning: $INSTANCE"
-    limactl start --progress "$INSTANCE"
+
+    limactl start \
+      --progress \
+      "$INSTANCE"
+
+    echo "==> Recycling initial Lima SSH connection"
+
+    close_lima_controlmaster
+
+    # Give sshd a moment after the multiplexed connection is closed.
+    sleep 1
+
+    install_host_terminfo
+
+    echo
+    echo "==> Running post-install checks"
+
+    run_doctor
+
+    echo
+    echo "CMSSW development VM is ready."
+    echo "Enter it with:"
+    echo
+    echo "  cmsvm shell"
+    echo
     ;;
 
   start)
@@ -62,11 +274,32 @@ case "${1:-}" in
     ;;
 
   shell)
-    exec limactl shell --start "$INSTANCE"
+    ensure_lima_ssh_include
+
+    status="$(
+      limactl list "$INSTANCE" \
+        --format '{{.Status}}'
+    )"
+
+    if [[ "$status" != "Running" ]]; then
+      limactl start "$INSTANCE" >/dev/null
+    fi
+
+    exec ssh "$SSH_ALIAS"
     ;;
 
   ssh)
-    exec ssh "lima-$INSTANCE"
+    ensure_lima_ssh_include
+    exec ssh "$SSH_ALIAS"
+    ;;
+
+  terminfo)
+    install_host_terminfo
+    ;;
+
+  doctor)
+    ensure_lima_ssh_include
+    run_doctor
     ;;
 
   stop)

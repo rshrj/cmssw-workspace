@@ -2,8 +2,6 @@
 
 typeset -U path PATH
 
-# Resolve repository root from this file:
-#   <repo>/shell/host.zsh
 typeset _cmssw_workspace_root="${${(%):-%N}:A:h:h}"
 
 path=(
@@ -17,7 +15,7 @@ alias cmssw='cmsvm shell'
 alias cmssw-start='cmsvm start'
 alias cmssw-stop='cmsvm stop'
 alias cmssw-status='cmsvm status'
-alias cmssw-ssh='cmsvm ssh'
+alias cmssw-doctor='cmsvm doctor'
 
 if (( $+commands[limactl] )); then
   source <(limactl completion zsh)
