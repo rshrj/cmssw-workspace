@@ -276,9 +276,4 @@ probes:
 
 message: |
   CMSSW development VM is ready.
-
-  Guest home:
-    {{.Home}}
-
-  CMSSW workspace:
-    {{.Home}}/work
+  Run `cmsvm shell` to enter the VM.
