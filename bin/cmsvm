@@ -43,6 +43,53 @@ Template:
 EOF
 }
 
+check_host_git_identity() {
+  local missing=0
+
+  for key in user.name user.email user.github; do
+    if [[ -z "$(git config --global --get "$key" || true)" ]]; then
+      echo "ERROR: missing host Git config: $key" >&2
+      missing=1
+    fi
+  done
+
+  if (( missing )); then
+    echo >&2
+    echo "Configure the missing values on macOS before creating the VM." >&2
+    return 1
+  fi
+}
+
+
+sync_git_identity() {
+  local name email github
+
+  name="$(git config --global --get user.name || true)"
+  email="$(git config --global --get user.email || true)"
+  github="$(git config --global --get user.github || true)"
+
+  if [[ -z "$name" || -z "$email" || -z "$github" ]]; then
+    echo "ERROR: host Git identity is incomplete." >&2
+    echo >&2
+    echo "Configure these once on macOS:" >&2
+    echo "  git config --global user.name 'Your Name'" >&2
+    echo "  git config --global user.email 'you@example.com'" >&2
+    echo "  git config --global user.github 'github-username'" >&2
+    exit 1
+  fi
+
+  echo "==> Syncing Git identity into guest"
+
+  ssh "$SSH_ALIAS" \
+    git config --global user.name "$name"
+
+  ssh "$SSH_ALIAS" \
+    git config --global user.email "$email"
+
+  ssh "$SSH_ALIAS" \
+    git config --global user.github "$github"
+}
+
 
 ensure_lima_ssh_include() {
   local ssh_dir="$HOME/.ssh"
@@ -167,43 +214,62 @@ run_doctor() {
   echo
   echo "==> Guest"
 
-  ssh "$SSH_ALIAS" '
-    set -e
+  ssh "$SSH_ALIAS" "HOST_TERM=$(printf '%q' "${TERM:-}") bash -s" <<'REMOTE'
+set -e
 
-    printf "OS: "
-    cat /etc/almalinux-release
+printf "OS: "
+cat /etc/almalinux-release
 
-    printf "architecture: "
-    uname -m
+printf "architecture: "
+uname -m
 
-    printf "login shell: "
-    getent passwd "$USER" | cut -d: -f7
+printf "login shell: "
+getent passwd "$USER" | cut -d: -f7
 
-    printf "home: "
-    printf "%s\n" "$HOME"
+printf "home: "
+printf "%s\n" "$HOME"
 
-    printf "zsh: "
-    command -v zsh
+printf "zsh: "
+command -v zsh
 
-    printf "git: "
-    git --version
+printf "git: "
+git --version
 
-    printf "nvim: "
-    nvim --version | head -1
+printf "nvim: "
+nvim --version | head -1
 
-    printf "tmux: "
-    tmux -V
+printf "tmux: "
+tmux -V
 
-    if [[ "${TERM:-}" == "xterm-ghostty" ]]; then
-      printf "Ghostty terminfo: "
-      if infocmp xterm-ghostty >/dev/null 2>&1; then
-        echo "OK"
-      else
-        echo "MISSING"
-        exit 1
-      fi
-    fi
-  '
+if [[ "${HOST_TERM:-}" == "xterm-ghostty" ]]; then
+  printf "Ghostty terminfo: "
+  if infocmp xterm-ghostty >/dev/null 2>&1; then
+    echo "OK"
+  else
+    echo "MISSING"
+    exit 1
+  fi
+fi
+
+printf "CVMFS: "
+rpm -q cvmfs
+
+printf "autofs: "
+systemctl is-active autofs
+
+echo "CVMFS repositories:"
+cvmfs_config probe
+
+test -r /cvmfs/cms.cern.ch/cmsset_default.sh
+
+echo "CMS environment:"
+zsh -lc '
+  source /cvmfs/cms.cern.ch/cmsset_default.sh
+  printf "SCRAM_ARCH: %s\n" "$SCRAM_ARCH"
+  printf "scramv1: "
+  command -v scramv1
+'
+REMOTE
 
   echo
   echo "CMSSW VM checks passed."
@@ -214,6 +280,7 @@ case "${1:-}" in
 
   host-setup)
     echo "==> Configuring host SSH"
+    check_host_git_identity
     ensure_lima_ssh_include
     ;;
 
@@ -222,6 +289,9 @@ case "${1:-}" in
     ;;
 
   create)
+    echo "==> Running host preflight checks"
+    check_host_git_identity
+
     echo "==> Configuring host SSH"
     ensure_lima_ssh_include
 
@@ -254,6 +324,7 @@ case "${1:-}" in
     # Give sshd a moment after the multiplexed connection is closed.
     sleep 1
 
+    sync_git_identity
     install_host_terminfo
 
     echo

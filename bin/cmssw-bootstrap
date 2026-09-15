@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+INSTANCE="${CMSSW_LIMA_INSTANCE:-cmssw}"
+SSH_ALIAS="lima-${INSTANCE}"
+
+SCRIPT_DIR="$(
+  cd "$(dirname "${BASH_SOURCE[0]}")"
+  pwd
+)"
+
+REPO_ROOT="$(
+  cd "$SCRIPT_DIR/.."
+  pwd
+)"
+
+SMOKE_CONFIG="$REPO_ROOT/config/smoke-test.env"
+
+ARCH=""
+RELEASE=""
+PACKAGE=""
+JOBS=""
+SMOKE_TEST=false
+
+
+usage() {
+  cat <<EOF
+Usage:
+
+  cmssw-bootstrap --release RELEASE --arch ARCH
+  cmssw-bootstrap --smoke-test
+
+Options:
+
+  --release RELEASE   CMSSW release/IB to create
+  --arch ARCH         SCRAM architecture
+  --package PACKAGE   Package to add before building
+  --jobs N            Parallel build jobs
+  --smoke-test        Use pinned values from config/smoke-test.env
+  -h, --help          Show this help
+
+Examples:
+
+  cmssw-bootstrap --smoke-test
+
+  cmssw-bootstrap \\
+    --arch el9_aarch64_gcc14 \\
+    --release CMSSW_20_1_X_2026-09-13-2300
+
+  cmssw-bootstrap \\
+    --arch el9_aarch64_gcc14 \\
+    --release CMSSW_20_1_X_2026-09-13-2300 \\
+    --package DataFormats/SiStripCluster \\
+    --jobs 6
+EOF
+}
+
+
+while (($#)); do
+  case "$1" in
+    --release)
+      RELEASE="${2:?missing value for --release}"
+      shift 2
+      ;;
+
+    --arch)
+      ARCH="${2:?missing value for --arch}"
+      shift 2
+      ;;
+
+    --package)
+      PACKAGE="${2:?missing value for --package}"
+      shift 2
+      ;;
+
+    --jobs)
+      JOBS="${2:?missing value for --jobs}"
+      shift 2
+      ;;
+
+    --smoke-test)
+      SMOKE_TEST=true
+      shift
+      ;;
+
+    -h|--help)
+      usage
+      exit 0
+      ;;
+
+    *)
+      echo "ERROR: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+
+if "$SMOKE_TEST"; then
+  if [[ ! -f "$SMOKE_CONFIG" ]]; then
+    echo "ERROR: smoke-test config not found:" >&2
+    echo "  $SMOKE_CONFIG" >&2
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  source "$SMOKE_CONFIG"
+
+  ARCH="${ARCH:-$SCRAM_ARCH}"
+  RELEASE="${RELEASE:-$CMSSW_RELEASE}"
+  PACKAGE="${PACKAGE:-$CMSSW_SMOKE_PACKAGE}"
+  JOBS="${JOBS:-$CMSSW_BUILD_JOBS}"
+fi
+
+
+if [[ -z "$ARCH" ]]; then
+  echo "ERROR: --arch is required" >&2
+  exit 2
+fi
+
+if [[ -z "$RELEASE" ]]; then
+  echo "ERROR: --release is required" >&2
+  exit 2
+fi
+
+JOBS="${JOBS:-6}"
+
+
+if ! [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --jobs must be a positive integer" >&2
+  exit 2
+fi
+
+
+if ! ssh -G "$SSH_ALIAS" >/dev/null 2>&1; then
+  echo "ERROR: SSH host '$SSH_ALIAS' is not configured." >&2
+  echo "Run: cmsvm host-setup" >&2
+  exit 1
+fi
+
+
+status="$(
+  limactl list "$INSTANCE" --format '{{.Status}}' 2>/dev/null || true
+)"
+
+if [[ "$status" != "Running" ]]; then
+  echo "==> Starting Lima instance: $INSTANCE"
+  limactl start "$INSTANCE" >/dev/null
+fi
+
+
+echo "==> CMSSW bootstrap"
+echo "    architecture: $ARCH"
+echo "    release:      $RELEASE"
+
+if [[ -n "$PACKAGE" ]]; then
+  echo "    package:      $PACKAGE"
+  echo "    build jobs:   $JOBS"
+fi
+
+echo
+
+
+ssh "$SSH_ALIAS" bash -s -- \
+  "$ARCH" \
+  "$RELEASE" \
+  "$PACKAGE" \
+  "$JOBS" <<'REMOTE'
+set -eo pipefail
+
+ARCH="$1"
+RELEASE="$2"
+PACKAGE="$3"
+JOBS="$4"
+
+CMSSET_DEFAULT="/cvmfs/cms.cern.ch/cmsset_default.sh"
+WORKDIR="$HOME/work"
+RELEASE_DIR="$WORKDIR/$RELEASE"
+
+
+echo "==> Checking CMS environment"
+
+if [[ ! -r "$CMSSET_DEFAULT" ]]; then
+  echo "ERROR: CMS environment not available:" >&2
+  echo "  $CMSSET_DEFAULT" >&2
+  exit 1
+fi
+
+export SCRAM_ARCH="$ARCH"
+
+# shellcheck disable=SC1090
+source "$CMSSET_DEFAULT"
+
+
+echo "==> Checking SCRAM architecture"
+
+if ! command -v scram >/dev/null 2>&1; then
+  echo "ERROR: scram is unavailable for SCRAM_ARCH=$SCRAM_ARCH" >&2
+  exit 1
+fi
+
+
+echo "==> Checking release availability"
+
+if ! scram list CMSSW |
+  awk -v release="$RELEASE" '
+    $1 == "CMSSW" && $2 == release {
+      found = 1
+    }
+    END {
+      exit !found
+    }
+  '
+then
+  echo "ERROR: release is not available for $SCRAM_ARCH:" >&2
+  echo "  $RELEASE" >&2
+  exit 1
+fi
+
+
+echo "==> Checking Git identity"
+
+for key in user.name user.email user.github; do
+  if [[ -z "$(git config --global --get "$key" || true)" ]]; then
+    echo "ERROR: guest Git configuration is missing $key" >&2
+    exit 1
+  fi
+done
+
+
+if [[ -e "$RELEASE_DIR" ]]; then
+  echo "ERROR: release area already exists:" >&2
+  echo "  $RELEASE_DIR" >&2
+  echo >&2
+  echo "Refusing to modify an existing development area." >&2
+  exit 1
+fi
+
+
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+
+echo "==> Creating CMSSW release area"
+
+cmsrel "$RELEASE"
+
+cd "$RELEASE/src"
+
+
+echo "==> Activating CMSSW environment"
+
+cmsenv
+
+if [[ "$CMSSW_VERSION" != "$RELEASE" ]]; then
+  echo "ERROR: unexpected CMSSW_VERSION=$CMSSW_VERSION" >&2
+  exit 1
+fi
+
+if [[ "$SCRAM_ARCH" != "$ARCH" ]]; then
+  echo "ERROR: unexpected SCRAM_ARCH=$SCRAM_ARCH" >&2
+  exit 1
+fi
+
+
+echo "==> Initializing CMSSW Git development area"
+
+git cms-init
+
+
+if [[ -n "$PACKAGE" ]]; then
+  echo "==> Adding package: $PACKAGE"
+
+  git cms-addpkg "$PACKAGE"
+
+  echo "==> Building with $JOBS jobs"
+
+  scram b -j "$JOBS"
+fi
+
+
+echo
+echo "CMSSW bootstrap completed successfully."
+echo
+echo "Release:"
+echo "  $CMSSW_VERSION"
+echo
+echo "Architecture:"
+echo "  $SCRAM_ARCH"
+echo
+echo "Development area:"
+echo "  $CMSSW_BASE"
+REMOTE

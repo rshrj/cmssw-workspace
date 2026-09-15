@@ -127,7 +127,38 @@ provision:
         man-db \
         bash-completion \
         procps-ng \
-        findutils
+        findutils \
+        glibc-devel
+
+      echo "==> Installing CernVM-FS"
+
+      dnf -y install \
+        https://cvmrepo.s3.cern.ch/cvmrepo/yum/cvmfs-release-latest.noarch.rpm
+
+      dnf -y install \
+        cvmfs \
+        autofs
+
+      echo "==> Configuring CernVM-FS"
+
+      cat > /etc/cvmfs/default.local <<'EOF'
+      CVMFS_REPOSITORIES=cms.cern.ch,cms-ib.cern.ch,cms-ci.cern.ch,grid.cern.ch
+      CVMFS_CLIENT_PROFILE=single
+      CVMFS_HTTP_PROXY=DIRECT
+      CVMFS_QUOTA_LIMIT=20000
+      EOF
+
+      mkdir -p /etc/cvmfs/config.d
+
+      cat > /etc/cvmfs/config.d/cms.cern.ch.local <<'EOF'
+      export CMS_LOCAL_SITE=T2_CH_CERN
+      EOF
+
+      cvmfs_config setup
+
+      systemctl enable --now autofs
+
+      cvmfs_config chksetup
 
       dnf clean all
 
@@ -237,6 +268,14 @@ provision:
 
       if [[ -r /usr/share/fzf/shell/completion.zsh ]]; then
         source /usr/share/fzf/shell/completion.zsh
+      fi
+
+      # ------------------------------------------------------------------
+      # CMS / CMSSW
+      # ------------------------------------------------------------------
+
+      if [[ -r /cvmfs/cms.cern.ch/cmsset_default.sh ]]; then
+        source /cvmfs/cms.cern.ch/cmsset_default.sh
       fi
 
       # ------------------------------------------------------------------
