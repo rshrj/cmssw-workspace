@@ -1,0 +1,284 @@
+minimumLimaVersion: 2.2.0
+
+# ----------------------------------------------------------------------
+# Base machine
+# ----------------------------------------------------------------------
+
+vmType: vz
+arch: aarch64
+
+# Pinned from Lima's current official AlmaLinux 9 template.
+# AlmaLinux 9.8 GenericCloud, aarch64, 2026-05-26.
+images:
+  - location: "https://repo.almalinux.org/almalinux/9.8/cloud/aarch64/images/AlmaLinux-9-GenericCloud-9.8-20260526.aarch64.qcow2"
+    arch: "aarch64"
+    digest: "sha256:b5d883c5f84c68a9828fbd3aac863f9a723b43f8965a32ff7a1c198301f42a29"
+
+# Lima's official AlmaLinux template declares 9p unsupported.
+mountTypesUnsupported:
+  - 9p
+
+# ----------------------------------------------------------------------
+# Resources
+# ----------------------------------------------------------------------
+
+cpus: 6
+memory: "10GiB"
+disk: "160GiB"
+
+# ----------------------------------------------------------------------
+# Filesystem policy
+# ----------------------------------------------------------------------
+
+# Deliberately do not mount the macOS home directory.
+#
+# CMSSW source/build trees should live on the native Linux filesystem.
+# Host <-> guest access is via SSH, rsync, scp, VS Code Remote SSH, etc.
+mounts: []
+
+# Keep this explicit in case we add controlled mounts later.
+mountType: virtiofs
+
+# Use a conventional Linux home because we are not mounting the host home.
+user:
+  home: "/home/{{.User}}"
+
+# ----------------------------------------------------------------------
+# Virtualization / x86 compatibility
+# ----------------------------------------------------------------------
+
+vmOpts:
+  vz:
+    rosetta:
+      enabled: true
+      binfmt: true
+
+# ----------------------------------------------------------------------
+# SSH
+# ----------------------------------------------------------------------
+
+ssh:
+  # Forward the macOS SSH agent into the VM.
+  # This lets Git/GitHub use the host's keys without copying private keys
+  # into the guest.
+  forwardAgent: true
+
+  # Do not import arbitrary ~/.ssh/*.pub keys into guest authorized_keys.
+  loadDotSSHPubKeys: false
+
+# ----------------------------------------------------------------------
+# Keep this VM focused on CMSSW rather than container development.
+# ----------------------------------------------------------------------
+
+containerd:
+  system: false
+  user: false
+
+upgradePackages: false
+
+timezone: "Europe/Paris"
+
+# ----------------------------------------------------------------------
+# Initial guest provisioning
+# ----------------------------------------------------------------------
+
+provision:
+  - mode: system
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      echo "==> Configuring AlmaLinux repositories"
+
+      dnf -y install dnf-plugins-core
+      dnf config-manager --set-enabled crb
+      dnf -y install epel-release
+
+      echo "==> Installing development and quality-of-life tools"
+
+      dnf -y install \
+        git \
+        git-lfs \
+        zsh \
+        zsh-autosuggestions \
+        zsh-syntax-highlighting \
+        tmux \
+        vim-enhanced \
+        neovim \
+        ripgrep \
+        fzf \
+        jq \
+        tree \
+        htop \
+        rsync \
+        curl \
+        wget \
+        openssh-clients \
+        tar \
+        gzip \
+        bzip2 \
+        xz \
+        unzip \
+        zip \
+        file \
+        which \
+        less \
+        man-db \
+        bash-completion \
+        procps-ng \
+        findutils
+
+      dnf clean all
+
+  - mode: user
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      echo "==> Configuring user environment"
+
+      mkdir -p \
+        "$HOME/work" \
+        "$HOME/scratch" \
+        "$HOME/bin" \
+        "$HOME/.cache/zsh"
+
+      git lfs install --skip-repo
+
+      # Make zsh the default login shell.
+      sudo usermod --shell /usr/bin/zsh "$USER"
+
+      cat > "$HOME/.zshrc" <<'EOF'
+      # ------------------------------------------------------------------
+      # Environment
+      # ------------------------------------------------------------------
+
+      export PATH="$HOME/bin:$PATH"
+
+      export EDITOR="nvim"
+      export VISUAL="nvim"
+      export PAGER="less"
+      export LESS="-FRX"
+
+      # ------------------------------------------------------------------
+      # History
+      # ------------------------------------------------------------------
+
+      HISTFILE="$HOME/.zsh_history"
+      HISTSIZE=100000
+      SAVEHIST=100000
+
+      setopt APPEND_HISTORY
+      setopt SHARE_HISTORY
+      setopt HIST_IGNORE_DUPS
+      setopt HIST_IGNORE_SPACE
+      setopt HIST_REDUCE_BLANKS
+
+      # ------------------------------------------------------------------
+      # Shell behaviour
+      # ------------------------------------------------------------------
+
+      setopt AUTO_CD
+      setopt INTERACTIVE_COMMENTS
+
+      bindkey -e
+
+      # ------------------------------------------------------------------
+      # Completion
+      # ------------------------------------------------------------------
+
+      autoload -Uz compinit
+      compinit -d "$HOME/.cache/zsh/zcompdump"
+
+      # ------------------------------------------------------------------
+      # Prompt + git branch
+      # ------------------------------------------------------------------
+
+      autoload -Uz colors
+      colors
+
+      autoload -Uz vcs_info
+      setopt PROMPT_SUBST
+
+      zstyle ':vcs_info:git:*' formats ' %F{magenta}[%b]%f'
+
+      precmd() {
+        vcs_info
+      }
+
+      PROMPT='%F{cyan}%n@%m%f %F{blue}%~%f${vcs_info_msg_0_} %(?.%F{green}.%F{red})❯%f '
+
+      # ------------------------------------------------------------------
+      # Useful aliases
+      # ------------------------------------------------------------------
+
+      alias ll='ls -lah --color=auto'
+      alias la='ls -A --color=auto'
+      alias l='ls -CF --color=auto'
+
+      alias ..='cd ..'
+      alias ...='cd ../..'
+
+      alias gs='git status -sb'
+      alias gd='git diff'
+      alias gl='git log --oneline --graph --decorate -20'
+      alias gco='git checkout'
+
+      alias c='clear'
+
+      # ------------------------------------------------------------------
+      # fzf
+      # ------------------------------------------------------------------
+
+      if [[ -r /usr/share/fzf/shell/key-bindings.zsh ]]; then
+        source /usr/share/fzf/shell/key-bindings.zsh
+      fi
+
+      if [[ -r /usr/share/fzf/shell/completion.zsh ]]; then
+        source /usr/share/fzf/shell/completion.zsh
+      fi
+
+      # ------------------------------------------------------------------
+      # Autosuggestions
+      # ------------------------------------------------------------------
+
+      if [[ -r /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+        source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+      fi
+
+      # Syntax highlighting MUST remain near the end of .zshrc.
+      if [[ -r /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+        source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+      fi
+      EOF
+
+# ----------------------------------------------------------------------
+# Readiness
+# ----------------------------------------------------------------------
+
+probes:
+  - mode: readiness
+    description: "development environment installed"
+    script: |
+      #!/usr/bin/env bash
+      set -e
+
+      command -v git >/dev/null
+      command -v zsh >/dev/null
+      command -v nvim >/dev/null
+      command -v tmux >/dev/null
+      command -v rg >/dev/null
+
+      test -d "$HOME/work"
+    hint: |
+      Guest provisioning did not complete successfully.
+      Inspect /var/log/cloud-init-output.log inside the guest.
+
+message: |
+  CMSSW development VM is ready.
+
+  Guest home:
+    {{.Home}}
+
+  CMSSW workspace:
+    {{.Home}}/work

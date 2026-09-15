@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+INSTANCE="${CMSSW_LIMA_INSTANCE:-cmssw}"
+
+SCRIPT_DIR="$(
+  cd "$(dirname "${BASH_SOURCE[0]}")"
+  pwd
+)"
+
+REPO_ROOT="$(
+  cd "$SCRIPT_DIR/.."
+  pwd
+)"
+
+TEMPLATE="$REPO_ROOT/lima/cmssw.yaml"
+
+usage() {
+  cat <<EOF
+Usage:
+
+  cmsvm validate
+  cmsvm create
+  cmsvm start
+  cmsvm shell
+  cmsvm ssh
+  cmsvm stop
+  cmsvm status
+  cmsvm delete
+
+Instance:
+  $INSTANCE
+
+Template:
+  $TEMPLATE
+EOF
+}
+
+case "${1:-}" in
+
+  validate)
+    limactl validate "$TEMPLATE"
+    ;;
+
+  create)
+    echo "==> Validating Lima template"
+    limactl validate "$TEMPLATE"
+
+    echo "==> Creating Lima instance: $INSTANCE"
+    limactl create \
+      --tty=false \
+      --name="$INSTANCE" \
+      "$TEMPLATE"
+
+    echo "==> Starting and provisioning: $INSTANCE"
+    limactl start --progress "$INSTANCE"
+    ;;
+
+  start)
+    limactl start "$INSTANCE"
+    ;;
+
+  shell)
+    exec limactl shell --start "$INSTANCE"
+    ;;
+
+  ssh)
+    exec ssh "lima-$INSTANCE"
+    ;;
+
+  stop)
+    limactl stop "$INSTANCE"
+    ;;
+
+  status)
+    limactl list "$INSTANCE"
+    ;;
+
+  delete)
+    limactl stop "$INSTANCE" 2>/dev/null || true
+    limactl delete "$INSTANCE"
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+
+esac
