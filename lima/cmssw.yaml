@@ -258,8 +258,29 @@ provision:
         vcs_info
       }
 
-      PROMPT='
-      %F{cyan}%n@%m%f %F{blue}%~%f${vcs_info_msg_0_}
+      autoload -Uz add-zsh-hook
+
+      # Blank line between commands, but not above the first prompt or
+      # after clear. Ctrl-L redraws without precmd, so it stays clean too.
+      _prompt_separator() {
+        if [[ -n "$_prompt_drawn" ]]; then
+          print
+        fi
+        _prompt_drawn=1
+      }
+
+      # $3 is the command with aliases expanded, so `c` counts as clear.
+      _prompt_reset_separator() {
+        if [[ "$3" == clear ]]; then
+          unset _prompt_drawn
+        fi
+      }
+
+      add-zsh-hook precmd _prompt_separator
+      add-zsh-hook preexec _prompt_reset_separator
+
+      # Path and branch on one line, the input on its own line below.
+      PROMPT='%F{cyan}%n@%m%f %F{blue}%~%f${vcs_info_msg_0_}
       %(?.%F{green}.%F{red})❯%f '
 
       # ------------------------------------------------------------------
@@ -310,7 +331,6 @@ provision:
         fi
       }
 
-      autoload -Uz add-zsh-hook
       add-zsh-hook precmd _cms_fix_locale
 
       # ------------------------------------------------------------------
