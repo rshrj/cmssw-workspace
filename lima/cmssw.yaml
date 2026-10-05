@@ -300,6 +300,19 @@ provision:
         source /cvmfs/cms.cern.ch/cmsset_default.sh
       fi
 
+      # cmsenv sets LC_ALL=C. In the C locale zle counts the multibyte prompt
+      # character as several columns, so the command line gets garbled.
+      # Keep C for everything except character handling.
+      _cms_fix_locale() {
+        if [[ "$LC_ALL" == C ]]; then
+          unset LC_ALL
+          export LC_CTYPE=en_US.UTF-8
+        fi
+      }
+
+      autoload -Uz add-zsh-hook
+      add-zsh-hook precmd _cms_fix_locale
+
       # ------------------------------------------------------------------
       # Autosuggestions
       # ------------------------------------------------------------------
