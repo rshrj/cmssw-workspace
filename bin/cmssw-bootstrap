@@ -33,7 +33,8 @@ Usage:
 
 Options:
 
-  --release RELEASE   CMSSW release/IB to create
+  --release RELEASE   CMSSW release/IB to create, or an IB series such as
+                      CMSSW_20_1_X to use its newest available IB
   --arch ARCH         SCRAM architecture
   --package PACKAGE   Package to add before building
   --jobs N            Parallel build jobs
@@ -46,11 +47,11 @@ Examples:
 
   cmssw-bootstrap \\
     --arch el9_aarch64_gcc14 \\
-    --release CMSSW_20_1_X_2026-09-13-2300
+    --release CMSSW_20_1_0_pre3
 
   cmssw-bootstrap \\
     --arch el9_aarch64_gcc14 \\
-    --release CMSSW_20_1_X_2026-09-13-2300 \\
+    --release CMSSW_20_1_X \\
     --package DataFormats/SiStripCluster \\
     --jobs 6
 EOF
@@ -183,7 +184,6 @@ fi
 
 CMSSET_DEFAULT="/cvmfs/cms.cern.ch/cmsset_default.sh"
 WORKDIR="$HOME/work"
-RELEASE_DIR="$WORKDIR/$RELEASE"
 
 
 echo "==> Checking CMS environment"
@@ -210,20 +210,45 @@ fi
 
 echo "==> Checking release availability"
 
-if ! scram list CMSSW |
-  awk -v release="$RELEASE" '
+AVAILABLE="$(scram list CMSSW)"
+
+# IBs only stay on CVMFS for a few weeks, so a series name such as
+# CMSSW_20_1_X picks its newest IB. Dated names sort chronologically.
+if [[ "$RELEASE" =~ ^CMSSW_[0-9]+_[0-9]+_X$ ]]; then
+  SERIES="$RELEASE"
+  RELEASE="$(
+    awk -v prefix="${SERIES}_" '
+      $1 == "CMSSW" && index($2, prefix) == 1 {
+        print $2
+      }
+    ' <<<"$AVAILABLE" |
+      sort |
+      tail -1
+  )"
+
+  if [[ -z "$RELEASE" ]]; then
+    echo "ERROR: no $SERIES IB is available for $SCRAM_ARCH" >&2
+    exit 1
+  fi
+
+  echo "    $SERIES -> $RELEASE"
+fi
+
+if ! awk -v release="$RELEASE" '
     $1 == "CMSSW" && $2 == release {
       found = 1
     }
     END {
       exit !found
     }
-  '
+  ' <<<"$AVAILABLE"
 then
   echo "ERROR: release is not available for $SCRAM_ARCH:" >&2
   echo "  $RELEASE" >&2
   exit 1
 fi
+
+RELEASE_DIR="$WORKDIR/$RELEASE"
 
 
 echo "==> Checking Git identity"

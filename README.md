@@ -173,14 +173,16 @@ Create a clean CMSSW development area explicitly:
 ```bash
 cmssw-bootstrap \
   --arch el9_aarch64_gcc14 \
-  --release CMSSW_20_1_X_2026-09-13-2300
+  --release CMSSW_20_1_0_pre3
 ```
+
+`--release` takes an exact release or IB name, such as `CMSSW_20_1_0_pre3` or `CMSSW_20_1_X_2026-10-04-2300`, or an IB series such as `CMSSW_20_1_X`. A series resolves to its newest IB available for the architecture. IBs are only kept on CVMFS for a few weeks, so dated IB names stop working after that.
 
 The bootstrap:
 
 1. verifies the CMS environment;
 2. verifies the requested SCRAM architecture;
-3. verifies the requested CMSSW release exists;
+3. resolves an IB series to its newest IB and verifies the release exists;
 4. verifies the CMS Git identity;
 5. creates the release with `cmsrel`;
 6. activates it with `cmsenv`;
@@ -206,11 +208,11 @@ The current smoke test uses:
 
 ```text
 SCRAM_ARCH=el9_aarch64_gcc14
-CMSSW_RELEASE=CMSSW_20_1_X_2026-09-13-2300
+CMSSW_RELEASE=CMSSW_20_1_0_pre3
 CMSSW_SMOKE_PACKAGE=DataFormats/SiStripCluster
 ```
 
-It creates a fresh release area, initializes the CMS Git checkout, checks out the package, and performs a native ARM64 C++ build.
+It is pinned to a pre-release rather than an IB because pre-releases stay on CVMFS, while IBs are removed after a few weeks. It creates a fresh release area, initializes the CMS Git checkout, checks out the package, and performs a native ARM64 C++ build.
 
 This validates the full chain:
 
