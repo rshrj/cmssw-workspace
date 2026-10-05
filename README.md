@@ -151,6 +151,20 @@ cmsvm delete
 
 The VM is disposable. Permanent configuration belongs in this repository rather than in manual changes to the Lima instance.
 
+## Input data
+
+Large input files, such as ROOT files downloaded from CERNBox, belong on the host in `~/Developer/cern-internship/cms-data`. The VM mounts that directory read-only at `/data/cms`, so the files survive `cmsvm delete` and are never copied into the VM disk:
+
+```bash
+# On macOS
+cp file.root ~/Developer/cern-internship/cms-data/
+
+# In the VM
+edmFileUtil file:/data/cms/file.root
+```
+
+Write job output to the VM filesystem (for example `~/work` or `~/scratch`), not to `/data/cms`.
+
 ## CMSSW bootstrap
 
 Create a clean CMSSW development area explicitly:
