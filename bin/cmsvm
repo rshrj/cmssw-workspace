@@ -18,6 +18,10 @@ REPO_ROOT="$(
 TEMPLATE="$REPO_ROOT/lima/cmssw.yaml"
 LIMA_SSH_CONFIG="$HOME/.lima/$INSTANCE/ssh.config"
 
+# Host directories mounted into the VM. Machine-specific, so not tracked.
+# One mount per line: HOST_DIR<TAB>GUEST_DIR<TAB>ro|rw
+MOUNTS_FILE="$REPO_ROOT/config/mounts.local"
+
 
 usage() {
   cat <<EOF
@@ -34,6 +38,14 @@ Usage:
   cmsvm doctor
   cmsvm terminfo
   cmsvm delete
+
+  cmsvm mount HOST_DIR [GUEST_DIR] [--rw]
+  cmsvm unmount GUEST_DIR
+  cmsvm mounts
+
+Mounts are read-only unless --rw is given. GUEST_DIR defaults to
+/mnt/<name of HOST_DIR>. They are saved in config/mounts.local and
+re-applied by 'cmsvm create'. Changing mounts restarts a running VM.
 
 Instance:
   $INSTANCE
@@ -171,6 +183,179 @@ install_host_terminfo() {
 }
 
 
+instance_exists() {
+  [[ -e "$HOME/.lima/$INSTANCE" ]]
+}
+
+
+instance_status() {
+  limactl list "$INSTANCE" --format '{{.Status}}'
+}
+
+
+# yq expression that adds one mount to a Lima config.
+mount_set_expr() {
+  local host="$1" guest="$2" mode="$3"
+  local writable=false
+
+  if [[ "$mode" == rw ]]; then
+    writable=true
+  fi
+
+  printf '.mounts += [{"location": "%s", "mountPoint": "%s", "writable": %s}]' \
+    "$host" "$guest" "$writable"
+}
+
+
+mount_saved() {
+  [[ -f "$MOUNTS_FILE" ]] &&
+    awk -F '\t' -v g="$1" '$2 == g { found = 1 } END { exit !found }' "$MOUNTS_FILE"
+}
+
+
+check_mount_path() {
+  case "$1" in
+    *'"'* | *'\'* | *$'\t'* | *$'\n'*)
+      echo "ERROR: unsupported character in path: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+
+# Apply a yq expression to the instance config. Lima only edits stopped
+# instances, so a running VM is stopped and started again.
+edit_instance() {
+  local expr="$1"
+  local was_running=0
+
+  if ! instance_exists; then
+    echo "Instance '$INSTANCE' does not exist; 'cmsvm create' will apply this."
+    return 0
+  fi
+
+  if [[ "$(instance_status)" == "Running" ]]; then
+    was_running=1
+    echo "==> Stopping $INSTANCE to change mounts (open VM shells will close)"
+    limactl stop "$INSTANCE"
+  fi
+
+  limactl edit --tty=false --set "$expr" "$INSTANCE"
+
+  if (( was_running )); then
+    echo "==> Starting $INSTANCE"
+    limactl start "$INSTANCE"
+    close_lima_controlmaster
+  fi
+}
+
+
+add_mount() {
+  local host="" guest="" mode=ro
+
+  while (( $# )); do
+    case "$1" in
+      --rw) mode=rw ;;
+      -*)
+        echo "ERROR: unknown option: $1" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$host" ]]; then
+          host="$1"
+        elif [[ -z "$guest" ]]; then
+          guest="$1"
+        else
+          usage
+          exit 1
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$host" ]]; then
+    usage
+    exit 1
+  fi
+
+  if [[ ! -d "$host" ]]; then
+    echo "ERROR: not a directory: $host" >&2
+    exit 1
+  fi
+
+  host="$(cd "$host" && pwd)"
+  guest="${guest:-/mnt/$(basename "$host")}"
+  guest="${guest%/}"
+
+  if [[ "$guest" != /?* ]]; then
+    echo "ERROR: GUEST_DIR must be an absolute path other than /: $guest" >&2
+    exit 1
+  fi
+
+  check_mount_path "$host"
+  check_mount_path "$guest"
+
+  if mount_saved "$guest"; then
+    echo "ERROR: $guest is already mounted. Unmount it first:" >&2
+    echo "  cmsvm unmount $guest" >&2
+    exit 1
+  fi
+
+  edit_instance "$(mount_set_expr "$host" "$guest" "$mode")"
+
+  printf '%s\t%s\t%s\n' "$host" "$guest" "$mode" >> "$MOUNTS_FILE"
+
+  echo "Mounted $host at $guest ($mode)."
+}
+
+
+remove_mount() {
+  local guest="${1:-}"
+  local tmp
+
+  if [[ -z "$guest" || $# -gt 1 ]]; then
+    usage
+    exit 1
+  fi
+
+  guest="${guest%/}"
+  check_mount_path "$guest"
+
+  if ! mount_saved "$guest"; then
+    echo "ERROR: no saved mount at $guest (see: cmsvm mounts)" >&2
+    exit 1
+  fi
+
+  edit_instance "del(.mounts[] | select(.mountPoint == \"$guest\"))"
+
+  tmp="$(mktemp)"
+  awk -F '\t' -v g="$guest" '$2 != g' "$MOUNTS_FILE" > "$tmp"
+  cat "$tmp" > "$MOUNTS_FILE"
+  rm -f "$tmp"
+
+  echo "Unmounted $guest."
+}
+
+
+list_mounts() {
+  echo "Saved in config/mounts.local (applied by 'cmsvm create'):"
+
+  if [[ -s "$MOUNTS_FILE" ]]; then
+    awk -F '\t' '{ printf "  %s -> %s (%s)\n", $1, $2, $3 }' "$MOUNTS_FILE"
+  else
+    echo "  none"
+  fi
+
+  if instance_exists; then
+    echo
+    echo "Active in instance '$INSTANCE':"
+    limactl list "$INSTANCE" --format \
+      '{{range .Config.Mounts}}  {{.Location}} -> {{.MountPoint}} (writable: {{.Writable}}){{"\n"}}{{else}}  none{{"\n"}}{{end}}'
+  fi
+}
+
+
 run_doctor() {
   echo "==> Host"
 
@@ -304,14 +489,28 @@ case "${1:-}" in
       exit 1
     fi
 
-    # Host side of the read-only /data/cms mount.
-    mkdir -p "$HOME/Developer/cern-internship/cms-data"
+    mount_args=()
+
+    if [[ -f "$MOUNTS_FILE" ]]; then
+      while IFS=$'\t' read -r host guest mode; do
+        if [[ ! -d "$host" ]]; then
+          echo "ERROR: mounted host directory is missing: $host" >&2
+          echo "Recreate it or run: cmsvm unmount $guest" >&2
+          exit 1
+        fi
+
+        echo "==> Mounting $host at $guest ($mode)"
+        mount_args+=(--set "$(mount_set_expr "$host" "$guest" "$mode")")
+      done < "$MOUNTS_FILE"
+    fi
 
     echo "==> Creating Lima instance: $INSTANCE"
 
+    # The ${...+...} form keeps bash 3.2 happy with an empty array.
     limactl create \
       --tty=false \
       --name="$INSTANCE" \
+      ${mount_args[@]+"${mount_args[@]}"} \
       "$TEMPLATE"
 
     echo "==> Starting and provisioning: $INSTANCE"
@@ -387,6 +586,20 @@ case "${1:-}" in
   delete)
     limactl stop "$INSTANCE" 2>/dev/null || true
     limactl delete "$INSTANCE"
+    ;;
+
+  mount)
+    shift
+    add_mount "$@"
+    ;;
+
+  unmount)
+    shift
+    remove_mount "$@"
+    ;;
+
+  mounts)
+    list_mounts
     ;;
 
   *)

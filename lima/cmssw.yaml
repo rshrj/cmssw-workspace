@@ -35,13 +35,9 @@ disk: "160GiB"
 # CMSSW source/build trees should live on the native Linux filesystem.
 # Host <-> guest access is via SSH, rsync, scp, VS Code Remote SSH, etc.
 #
-# The one exception is input data: large ROOT files are kept on the host
-# in ~/Developer/cern-internship/cms-data so they survive VM rebuilds, and
-# are shared read-only.
-mounts:
-  - location: "~/Developer/cern-internship/cms-data"
-    mountPoint: "/data/cms"
-    writable: false
+# Machine-specific host directories (e.g. large input data) are added per
+# user with `cmsvm mount`, which saves them in config/mounts.local.
+mounts: []
 
 mountType: virtiofs
 
