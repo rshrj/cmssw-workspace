@@ -162,11 +162,12 @@ fi
 
 echo
 
+PACKAGE_ARG="${PACKAGE:-__NONE__}"
 
 ssh "$SSH_ALIAS" bash -s -- \
   "$ARCH" \
   "$RELEASE" \
-  "$PACKAGE" \
+  "$PACKAGE_ARG" \
   "$JOBS" <<'REMOTE'
 set -eo pipefail
 
@@ -174,6 +175,11 @@ ARCH="$1"
 RELEASE="$2"
 PACKAGE="$3"
 JOBS="$4"
+
+if [[ "$PACKAGE" == "__NONE__" ]]; then
+  PACKAGE=""
+fi
+
 
 CMSSET_DEFAULT="/cvmfs/cms.cern.ch/cmsset_default.sh"
 WORKDIR="$HOME/work"

@@ -127,8 +127,28 @@ provision:
         man-db \
         bash-completion \
         procps-ng \
-        findutils \
-        glibc-devel
+        findutils
+
+      # CMSSW / CMS EL9 build-time dependencies
+      dnf -y install \
+        gcc-c++ \
+        glibc-devel \
+        openssl-devel \
+        ncurses-devel \
+        readline-devel \
+        tcl-devel \
+        tk-devel \
+        mesa-libGL-devel \
+        mesa-libGLU-devel \
+        libX11-devel \
+        libXext-devel \
+        libXft-devel \
+        libXpm-devel \
+        libXmu-devel \
+        libdrm-devel \
+        libtool \
+        krb5-devel \
+        libcom_err-devel
 
       echo "==> Installing CernVM-FS"
 
