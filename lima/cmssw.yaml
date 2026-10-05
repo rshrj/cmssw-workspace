@@ -101,6 +101,7 @@ provision:
       dnf -y install \
         git \
         git-lfs \
+        cmake \
         zsh \
         zsh-autosuggestions \
         zsh-syntax-highlighting \
@@ -209,7 +210,7 @@ provision:
       # Environment
       # ------------------------------------------------------------------
 
-      export PATH="$HOME/bin:$PATH"
+      export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
 
       export EDITOR="nvim"
       export VISUAL="nvim"
