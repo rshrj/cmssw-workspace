@@ -1,0 +1,9 @@
+# conda-forge packages installed into the guest by `cmsvm sync`.
+#
+# conda-forge builds against an old glibc, so the same binaries run on the
+# el9 VM and inside the el8 container (which shares the guest's /home).
+nvim=0.12.6
+ripgrep=15.2.0
+fzf=0.74.5
+tree-sitter-cli=0.27.1
+clang-tools=23.1.3

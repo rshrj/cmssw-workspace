@@ -15,13 +15,12 @@ REPO_ROOT="$(
   pwd
 )"
 
-SMOKE_CONFIG="$REPO_ROOT/config/smoke-test.env"
-
 ARCH=""
 RELEASE=""
 PACKAGE=""
 JOBS=""
-SMOKE_TEST=false
+WORKDIR=""
+SMOKE_TEST=""
 
 
 usage() {
@@ -29,16 +28,20 @@ usage() {
 Usage:
 
   cmssw-bootstrap --release RELEASE --arch ARCH
-  cmssw-bootstrap --smoke-test
+  cmssw-bootstrap --smoke-test [el8]
 
 Options:
 
   --release RELEASE   CMSSW release/IB to create, or an IB series such as
                       CMSSW_20_1_X to use its newest available IB
-  --arch ARCH         SCRAM architecture
+  --arch ARCH         SCRAM architecture; el8 architectures run in the
+                      el8 container (cmssw-el8) on the el9 VM
   --package PACKAGE   Package to add before building
   --jobs N            Parallel build jobs
-  --smoke-test        Use pinned values from config/smoke-test.env
+  --workdir DIR       Guest directory for the release area (default ~/work)
+  --smoke-test [el8]  Use pinned values from config/smoke-test.env, or
+                      config/smoke-test-el8.env, in a new directory
+                      under ~/scratch unless --workdir is given
   -h, --help          Show this help
 
 Examples:
@@ -54,6 +57,10 @@ Examples:
     --release CMSSW_20_1_X \\
     --package DataFormats/SiStripCluster \\
     --jobs 6
+
+  cmssw-bootstrap \\
+    --arch el8_aarch64_gcc13 \\
+    --release CMSSW_20_0_0_patch1
 EOF
 }
 
@@ -80,9 +87,19 @@ while (($#)); do
       shift 2
       ;;
 
+    --workdir)
+      WORKDIR="${2:?missing value for --workdir}"
+      shift 2
+      ;;
+
     --smoke-test)
-      SMOKE_TEST=true
+      SMOKE_TEST=default
       shift
+
+      if [[ "${1:-}" == el8 ]]; then
+        SMOKE_TEST=el8
+        shift
+      fi
       ;;
 
     -h|--help)
@@ -99,7 +116,13 @@ while (($#)); do
 done
 
 
-if "$SMOKE_TEST"; then
+if [[ -n "$SMOKE_TEST" ]]; then
+  if [[ "$SMOKE_TEST" == el8 ]]; then
+    SMOKE_CONFIG="$REPO_ROOT/config/smoke-test-el8.env"
+  else
+    SMOKE_CONFIG="$REPO_ROOT/config/smoke-test.env"
+  fi
+
   if [[ ! -f "$SMOKE_CONFIG" ]]; then
     echo "ERROR: smoke-test config not found:" >&2
     echo "  $SMOKE_CONFIG" >&2
@@ -113,6 +136,10 @@ if "$SMOKE_TEST"; then
   RELEASE="${RELEASE:-$CMSSW_RELEASE}"
   PACKAGE="${PACKAGE:-$CMSSW_SMOKE_PACKAGE}"
   JOBS="${JOBS:-$CMSSW_BUILD_JOBS}"
+
+  # A fresh directory, so existing areas under ~/work are never touched.
+  # The ~ is expanded by the guest shell.
+  WORKDIR="${WORKDIR:-~/scratch/smoke-test-$(date +%Y%m%d-%H%M%S)}"
 fi
 
 
@@ -127,6 +154,14 @@ if [[ -z "$RELEASE" ]]; then
 fi
 
 JOBS="${JOBS:-6}"
+WORKDIR="${WORKDIR:-~/work}"
+
+# An unquoted ~ is expanded by the macOS shell, not the guest one.
+if [[ "$WORKDIR" == "$HOME"* ]]; then
+  echo "ERROR: --workdir is a macOS path: $WORKDIR" >&2
+  echo "Quote it (--workdir '~/scratch/x') or give a guest path." >&2
+  exit 2
+fi
 
 
 if ! [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
@@ -152,9 +187,41 @@ if [[ "$status" != "Running" ]]; then
 fi
 
 
+# el8 releases run in the el8 container on the el9 VM: a native el8 VM
+# cannot boot on Apple Silicon (its kernel uses 64 KB pages).
+case "${ARCH%%_*}" in
+  el8|cc8|cs8|alma8) ARCH_OS=8 ;;
+  el9|cs9|alma9)     ARCH_OS=9 ;;
+  *)                 ARCH_OS="" ;;
+esac
+
+GUEST_OS="$(ssh "$SSH_ALIAS" rpm -E %rhel)"
+
+if [[ "$ARCH_OS" == "$GUEST_OS" ]]; then
+  RUNNER=(bash)
+elif [[ "$ARCH_OS" == 8 && "$GUEST_OS" == 9 ]]; then
+  if ! ssh "$SSH_ALIAS" test -x '~/bin/cmssw-el8'; then
+    echo "ERROR: ~/bin/cmssw-el8 is missing in the VM." >&2
+    echo "Run: cmsvm sync" >&2
+    exit 1
+  fi
+  RUNNER=('~/bin/cmssw-el8' bash)
+else
+  echo "ERROR: $ARCH needs ${ARCH%%_*}, but '$INSTANCE' runs EL$GUEST_OS." >&2
+  echo "Supported here: el$GUEST_OS architectures natively, and el8 ones" >&2
+  echo "in the el8 container." >&2
+  exit 1
+fi
+
+
 echo "==> CMSSW bootstrap"
 echo "    architecture: $ARCH"
 echo "    release:      $RELEASE"
+echo "    directory:    $WORKDIR"
+
+if [[ "$ARCH_OS" != "$GUEST_OS" ]]; then
+  echo "    container:    cmssw-el8"
+fi
 
 if [[ -n "$PACKAGE" ]]; then
   echo "    package:      $PACKAGE"
@@ -165,17 +232,19 @@ echo
 
 PACKAGE_ARG="${PACKAGE:-__NONE__}"
 
-ssh "$SSH_ALIAS" bash -s -- \
+ssh "$SSH_ALIAS" "${RUNNER[@]}" -s -- \
   "$ARCH" \
   "$RELEASE" \
   "$PACKAGE_ARG" \
-  "$JOBS" <<'REMOTE'
+  "$JOBS" \
+  "$WORKDIR" <<'REMOTE'
 set -eo pipefail
 
 ARCH="$1"
 RELEASE="$2"
 PACKAGE="$3"
 JOBS="$4"
+WORKDIR="$5"
 
 if [[ "$PACKAGE" == "__NONE__" ]]; then
   PACKAGE=""
@@ -183,7 +252,6 @@ fi
 
 
 CMSSET_DEFAULT="/cvmfs/cms.cern.ch/cmsset_default.sh"
-WORKDIR="$HOME/work"
 
 
 echo "==> Checking CMS environment"
