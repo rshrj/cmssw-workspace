@@ -22,7 +22,8 @@ AlmaLinux 9 ARM64
         │
         ├── CMS SCRAM environment
         ├── Git + cms-git-tools
-        ├── zsh / tmux / Neovim / ripgrep / fzf
+        ├── zsh / tmux / Neovim / ripgrep / fzf / clangd
+        ├── cmssw-el8: CMS el8 container (apptainer) for el8-only releases
         └── ~/work
               └── CMSSW development areas
 ```
@@ -37,13 +38,26 @@ CMSSW source and build trees live on the VM's native Linux filesystem rather tha
 │   ├── cmsvm
 │   └── cmssw-bootstrap
 ├── config/
-│   └── smoke-test.env
+│   ├── smoke-test.env
+│   └── smoke-test-el8.env
+├── docs/
+│   └── el8.md
+├── guest/
+│   ├── bin/cmssw-el8
+│   ├── nvim/
+│   │   ├── init.lua
+│   │   └── lazy-lock.json
+│   ├── install.sh
+│   ├── tools.txt
+│   └── zshrc
 ├── lima/
 │   └── cmssw.yaml
 ├── shell/
 │   └── host.zsh
 └── README.md
 ```
+
+`guest/` holds what `cmsvm sync` installs into the VM: the pinned tools, `~/.zshrc`, the Neovim configuration and the `cmssw-el8` helper.
 
 ## Requirements
 
@@ -96,7 +110,7 @@ Create the VM:
 cmsvm create
 ```
 
-This creates and provisions a native AArch64 AlmaLinux VM with CVMFS, CMS prerequisites, development tools, SSH integration, zsh, and terminal support.
+This creates and provisions a native AArch64 AlmaLinux VM with CVMFS, CMS prerequisites, development tools, SSH integration, zsh, and terminal support. It then runs `cmsvm sync` to install the files from `guest/`.
 
 ## Verify the environment
 
@@ -113,10 +127,12 @@ A healthy environment verifies:
 - AlmaLinux
 - zsh login shell
 - SSH integration
+- Neovim, ripgrep, fzf and clangd from `cmsvm sync`
 - Ghostty terminfo when applicable
 - CVMFS
 - CMS repositories
 - SCRAM
+- the el8 container, and Neovim inside it
 - Git identity
 
 ## Enter the VM
@@ -166,6 +182,42 @@ Mounts are read-only unless `--rw` is given, and the guest directory defaults to
 
 Keep CMSSW source and build trees on the VM filesystem, and write job output there (for example `~/work` or `~/scratch`) unless a mount is writable on purpose.
 
+## Guest tools and configuration
+
+The guest's shell and editor setup lives in `guest/` and is installed by:
+
+```bash
+cmsvm sync
+```
+
+It installs:
+
+- the conda-forge packages pinned in `guest/tools.txt` (Neovim, ripgrep, fzf, tree-sitter, clangd) under `~/.local/share/cmssw-workspace`, linked into `~/.local/bin`;
+- `guest/zshrc` as `~/.zshrc`, keeping a dated backup if the old one differed;
+- `guest/nvim/` as `~/.config/nvim`, then the plugins pinned in `lazy-lock.json` and the Tree-sitter parsers;
+- `guest/bin/cmssw-el8` as `~/bin/cmssw-el8`.
+
+conda-forge builds against an old glibc, so the same binaries also run in the el8 container. `cmsvm sync` is safe to re-run and only rebuilds the tools when `tools.txt` changes.
+
+The repository is the source of truth: `cmsvm sync` overwrites `~/.zshrc` and `~/.config/nvim`. Make changes in `guest/` and sync them. To update the plugins, run `:Lazy update` in the VM, then copy the new lock file back into the repository:
+
+```bash
+scp lima-cmssw:.config/nvim/lazy-lock.json guest/nvim/
+```
+
+## el8 releases
+
+Some releases, such as `CMSSW_20_0_0_patch1`, exist for `el8_aarch64_gcc13` but not for `el9_aarch64`. They run in the CMS el8 container from CVMFS, inside the VM:
+
+```bash
+cmssw-el8                       # interactive zsh, prompt starts with [el8]
+cmssw-el8 cmsRun config.py      # one command
+```
+
+`cmssw-el8` wraps `/cvmfs/cms.cern.ch/common/cmssw-el8`. It puts apptainer from CVMFS on `PATH`, sets `SCRAM_ARCH=el8_aarch64_gcc13` unless another el8 architecture is set, and starts zsh with the usual `~/.zshrc`, plugins, Neovim and fzf. The container shares the VM's kernel, `/home`, `/cvmfs` and `/data`, and runs at native speed.
+
+`cmssw-bootstrap --arch el8_…` runs in the container automatically. An el8 VM is not an option: the el8 aarch64 kernel uses 64 KB pages, which Apple Silicon does not support. See `docs/el8.md`.
+
 ## CMSSW bootstrap
 
 Create a clean CMSSW development area explicitly:
@@ -190,6 +242,16 @@ The bootstrap:
 
 Existing release areas are never silently reused or modified.
 
+The area is created in `~/work` unless `--workdir` names another guest directory. Quote a `~` so that the guest expands it: `--workdir '~/scratch/test'`.
+
+The architecture's OS must match the VM (el9), except for el8 architectures, which run in the el8 container:
+
+```bash
+cmssw-bootstrap \
+  --arch el8_aarch64_gcc13 \
+  --release CMSSW_20_0_0_patch1
+```
+
 ## Reproducibility smoke test
 
 The repository contains a pinned known-good smoke-test configuration:
@@ -202,7 +264,10 @@ Run:
 
 ```bash
 cmssw-bootstrap --smoke-test
+cmssw-bootstrap --smoke-test el8
 ```
+
+Each run creates its area in a new directory under `~/scratch/smoke-test-<date>-<time>`, so existing areas in `~/work` are never touched. Delete the old directories when they are no longer needed. The el8 test uses `config/smoke-test-el8.env` (`CMSSW_20_0_0_patch1` with `el8_aarch64_gcc13`, in the el8 container).
 
 The current smoke test uses:
 
@@ -234,9 +299,10 @@ cmsvm delete
 cmsvm create
 cmsvm doctor
 cmssw-bootstrap --smoke-test
+cmssw-bootstrap --smoke-test el8
 ```
 
-If all four commands succeed, the complete local CMSSW environment has been recreated from repository configuration.
+If all five commands succeed, the complete local CMSSW environment has been recreated from repository configuration.
 
 ## SSH
 
@@ -264,6 +330,26 @@ The guest includes:
 - tmux
 - ripgrep
 - fzf
+
+### Neovim
+
+`guest/nvim/init.lua` is a small configuration built on lazy.nvim:
+
+- Catppuccin (mocha) theme and lualine status line;
+- Tree-sitter highlighting and indentation;
+- fzf-lua: `<Space>ff` files, `<Space>fg` grep, `<Space>fw` word under cursor, `<Space>fb` buffers, `<Space>fs` symbols, `<Space>fd` diagnostics;
+- gitsigns: `]c`/`[c` next/previous hunk, `<Space>hp` preview, `<Space>hr` reset, `<Space>hb` blame;
+- clangd with Neovim's built-in completion, and `<Space>cf` to format; Neovim's default LSP keys apply (`K`, `grr`, `grn`, `gra`, `gri`);
+- which-key, which lists the mappings after `<Space>`;
+- `<Space>y` copies to the macOS clipboard through OSC 52.
+
+For clangd in a CMSSW area, generate the compilation database after building:
+
+```bash
+scram b llvm-ccdb
+```
+
+It writes `compile_commands.json` to `$CMSSW_BASE`, and clangd finds it from any file below. The database names the compiler as plain `clang++`, so start nvim from a shell where `cmsenv` has been run; clangd then asks the CMS compiler for its system headers.
 
 VS Code can connect to:
 

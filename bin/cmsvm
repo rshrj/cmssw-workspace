@@ -30,6 +30,7 @@ Usage:
   cmsvm host-setup
   cmsvm validate
   cmsvm create
+  cmsvm sync
   cmsvm start
   cmsvm shell
   cmsvm ssh
@@ -42,6 +43,9 @@ Usage:
   cmsvm mount HOST_DIR [GUEST_DIR] [--rw]
   cmsvm unmount GUEST_DIR
   cmsvm mounts
+
+'cmsvm sync' installs the repository's guest/ files (tools, .zshrc,
+Neovim config, cmssw-el8) into the VM; 'cmsvm create' runs it too.
 
 Mounts are read-only unless --rw is given. GUEST_DIR defaults to
 /mnt/<name of HOST_DIR>. They are saved in config/mounts.local and
@@ -180,6 +184,18 @@ install_host_terminfo() {
         'mkdir -p "$HOME/.terminfo" && tic -x -o "$HOME/.terminfo" -'
 
   fi
+}
+
+
+# Copy guest/ into the VM and install it. See guest/install.sh.
+sync_guest() {
+  local dest=".local/share/cmssw-workspace/guest"
+
+  echo "==> Installing guest tools and configuration"
+
+  ssh "$SSH_ALIAS" mkdir -p "$dest"
+  rsync -a --delete "$REPO_ROOT/guest/" "$SSH_ALIAS:$dest/"
+  ssh "$SSH_ALIAS" bash "$dest/install.sh"
 }
 
 
@@ -420,8 +436,11 @@ command -v zsh
 printf "git: "
 git --version
 
-printf "nvim: "
-nvim --version | head -1
+# Installed by `cmsvm sync`, not on this non-interactive shell's PATH.
+for tool in nvim rg fzf clangd; do
+  printf "%s: " "$tool"
+  "$HOME/.local/bin/$tool" --version | head -1
+done
 
 printf "tmux: "
 tmux -V
@@ -454,6 +473,12 @@ zsh -lc '
   printf "scramv1: "
   command -v scramv1
 '
+
+printf "el8 container: "
+"$HOME/bin/cmssw-el8" cat /etc/redhat-release
+
+printf "nvim in el8 container: "
+"$HOME/bin/cmssw-el8" "$HOME/.local/bin/nvim" --version | head -1
 REMOTE
 
   echo
@@ -528,6 +553,7 @@ case "${1:-}" in
 
     sync_git_identity
     install_host_terminfo
+    sync_guest
 
     echo
     echo "==> Running post-install checks"
@@ -568,6 +594,10 @@ case "${1:-}" in
 
   terminfo)
     install_host_terminfo
+    ;;
+
+  sync)
+    sync_guest
     ;;
 
   doctor)
