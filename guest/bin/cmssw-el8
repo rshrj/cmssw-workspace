@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# Run el8 CMSSW releases on this el9 VM, in the CMS el8 container from
+# CVMFS, with the usual zsh setup.
+#
+#   cmssw-el8                  interactive zsh
+#   cmssw-el8 [--] CMD ARG...  run one command
+#
+# The container shares the kernel, /home, /cvmfs and /data with the VM.
+# An el8 VM is not an option: the el8 aarch64 kernel uses 64 KB pages,
+# which Apple Silicon does not support.
+
+set -euo pipefail
+
+LAUNCHER="/cvmfs/cms.cern.ch/common/cmssw-el8"
+APPTAINER_BIN="/cvmfs/oasis.opensciencegrid.org/mis/apptainer/current/bin"
+
+if [[ ! -x "$LAUNCHER" || ! -x "$APPTAINER_BIN/apptainer" ]]; then
+  echo "ERROR: CVMFS is not available (need $LAUNCHER and apptainer)" >&2
+  exit 1
+fi
+
+export PATH="$APPTAINER_BIN:$PATH"
+
+# Apptainer resets PATH inside the container. Put the guest helpers and
+# the ~/.local/bin tools (nvim, rg, fzf, clangd) in front; they hold no
+# system tools, so bash, tar etc. still come from the container.
+export APPTAINERENV_PREPEND_PATH="$HOME/bin:$HOME/.local/bin"
+
+# The launcher drops a SCRAM_ARCH for another OS, and its default is
+# el8_aarch64_gcc12.
+if [[ "${SCRAM_ARCH:-}" != el8_* ]]; then
+  export SCRAM_ARCH="el8_aarch64_gcc13"
+fi
+
+# The zsh plugins are installed on the VM only.
+binds=()
+for dir in /usr/share/zsh-autosuggestions /usr/share/zsh-syntax-highlighting; do
+  if [[ -d "$dir" ]]; then
+    binds+=(-B "$dir")
+  fi
+done
+
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
+
+if (( $# == 0 )); then
+  set -- zsh -i
+fi
+
+# The launcher wraps the command in single quotes, which breaks commands
+# that contain one. Pass it through the environment instead; apptainer
+# keeps the caller's environment.
+CMSSW_EL8_COMMAND="$(printf '%q ' "$@")"
+export CMSSW_EL8_COMMAND
+
+exec "$LAUNCHER" \
+  ${binds[@]+"${binds[@]}"} \
+  -- 'eval "$CMSSW_EL8_COMMAND"'

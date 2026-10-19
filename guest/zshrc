@@ -1,0 +1,174 @@
+# ------------------------------------------------------------------
+# Environment
+# ------------------------------------------------------------------
+
+export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
+
+# Absolute path: EDITOR is inherited by the el8 container, which has no
+# nvim on its default PATH. The ~/.local/bin nvim runs in both.
+if [[ -x "$HOME/.local/bin/nvim" ]]; then
+  export EDITOR="$HOME/.local/bin/nvim"
+else
+  export EDITOR="vim"
+fi
+export VISUAL="$EDITOR"
+export PAGER="less"
+export LESS="-FRX"
+
+# ------------------------------------------------------------------
+# History
+# ------------------------------------------------------------------
+
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=100000
+SAVEHIST=100000
+
+setopt APPEND_HISTORY
+setopt SHARE_HISTORY
+setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_SPACE
+setopt HIST_REDUCE_BLANKS
+
+# ------------------------------------------------------------------
+# Shell behaviour
+# ------------------------------------------------------------------
+
+setopt AUTO_CD
+setopt INTERACTIVE_COMMENTS
+
+bindkey -e
+
+# ------------------------------------------------------------------
+# Completion
+# ------------------------------------------------------------------
+
+autoload -Uz compinit
+# One dump per zsh version: the el8 container has an older zsh.
+compinit -d "$HOME/.cache/zsh/zcompdump-$ZSH_VERSION"
+
+# ------------------------------------------------------------------
+# Prompt + git branch
+# ------------------------------------------------------------------
+
+autoload -Uz colors
+colors
+
+autoload -Uz vcs_info
+setopt PROMPT_SUBST
+
+zstyle ':vcs_info:git:*' formats ' %F{magenta}[%b]%f'
+
+precmd() {
+  vcs_info
+}
+
+autoload -Uz add-zsh-hook
+
+# Blank line between commands, but not above the first prompt or
+# after clear. Ctrl-L redraws without precmd, so it stays clean too.
+_prompt_separator() {
+  if [[ -n "$_prompt_drawn" ]]; then
+    print
+  fi
+  _prompt_drawn=1
+}
+
+# $3 is the command with aliases expanded, so `c` counts as clear.
+_prompt_reset_separator() {
+  if [[ "$3" == clear ]]; then
+    unset _prompt_drawn
+  fi
+}
+
+add-zsh-hook precmd _prompt_separator
+add-zsh-hook preexec _prompt_reset_separator
+
+# Inside a container (cmssw-el8), prefix the prompt with its OS, e.g. [el8].
+_container_tag=""
+if [[ -n "$APPTAINER_NAME" ]]; then
+  _container_tag="%F{yellow}[${APPTAINER_NAME%%:*}]%f "
+fi
+
+# Path and branch on one line, the input on its own line below.
+PROMPT='${_container_tag}%F{cyan}%n@%m%f %F{blue}%~%f${vcs_info_msg_0_}
+%(?.%F{green}.%F{red})❯%f '
+
+# ------------------------------------------------------------------
+# Useful aliases
+# ------------------------------------------------------------------
+
+# el9's /etc/profile.d/colorls.sh sets these up, but the el8 container
+# image has no copy of it (nor /etc/DIR_COLORS).
+alias ls='ls --color=auto'
+
+if [[ -z "$LS_COLORS" ]] && (( $+commands[dircolors] )); then
+  eval "$(dircolors -b)"
+fi
+
+alias ll='ls -lah --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+
+alias ..='cd ..'
+alias ...='cd ../..'
+
+alias gs='git status -sb'
+alias gd='git diff'
+alias gl='git log --oneline --graph --decorate -20'
+alias gco='git checkout'
+
+alias c='clear'
+
+# ------------------------------------------------------------------
+# fzf
+# ------------------------------------------------------------------
+
+# Key bindings and completion, from the fzf in ~/.local/bin.
+if (( $+commands[fzf] )); then
+  source <(fzf --zsh)
+fi
+
+# ------------------------------------------------------------------
+# CMS / CMSSW
+# ------------------------------------------------------------------
+
+if [[ -r /cvmfs/cms.cern.ch/cmsset_default.sh ]]; then
+  source /cvmfs/cms.cern.ch/cmsset_default.sh
+fi
+
+# cmsset_default.sh puts /cvmfs/cms.cern.ch/common first, which would hide
+# ~/bin/cmssw-el8 behind the CMS launcher of the same name. Move our
+# directories back to the front (-U keeps only the first occurrence).
+typeset -U path
+path=("$HOME/bin" "$HOME/.local/bin" $path)
+
+# ROOT's interpreter compiles dictionary headers when files are opened.
+# The HLS ap_int headers used by the L1 track trigger formats trip clang's
+# -Wformat (%llu with uint64_t) on every run. ROOT appends these flags to
+# its defaults; this only silences printf/scanf format checks in cling.
+export EXTRA_CLING_ARGS="-Wno-format"
+
+# cmsenv sets LC_ALL=C. In the C locale zle counts the multibyte prompt
+# character as several columns, so the command line gets garbled.
+# Keep C for everything except character handling.
+_cms_fix_locale() {
+  if [[ "$LC_ALL" == C ]]; then
+    unset LC_ALL
+    export LC_CTYPE=en_US.UTF-8
+  fi
+}
+
+add-zsh-hook precmd _cms_fix_locale
+
+# ------------------------------------------------------------------
+# Autosuggestions
+# ------------------------------------------------------------------
+
+if [[ -r /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+  source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+
+# Syntax highlighting MUST remain near the end of .zshrc.
+if [[ -r /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+  source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi
