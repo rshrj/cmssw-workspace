@@ -4,13 +4,8 @@
 
 export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
 
-# Absolute path: EDITOR is inherited by the el8 container, which has no
-# nvim on its default PATH. The ~/.local/bin nvim runs in both.
-if [[ -x "$HOME/.local/bin/nvim" ]]; then
-  export EDITOR="$HOME/.local/bin/nvim"
-else
-  export EDITOR="vim"
-fi
+# ~/.config/zsh/conf.d/cms.zsh switches these to nvim when it is installed.
+export EDITOR="vim"
 export VISUAL="$EDITOR"
 export PAGER="less"
 export LESS="-FRX"
@@ -129,36 +124,13 @@ if (( $+commands[fzf] )); then
 fi
 
 # ------------------------------------------------------------------
-# CMS / CMSSW
+# Machine-local additions: the CMS setup (cms.zsh from `cmsvm sync`)
 # ------------------------------------------------------------------
 
-if [[ -r /cvmfs/cms.cern.ch/cmsset_default.sh ]]; then
-  source /cvmfs/cms.cern.ch/cmsset_default.sh
-fi
-
-# cmsset_default.sh puts /cvmfs/cms.cern.ch/common first, which would hide
-# ~/bin/cmssw-el8 behind the CMS launcher of the same name. Move our
-# directories back to the front (-U keeps only the first occurrence).
-typeset -U path
-path=("$HOME/bin" "$HOME/.local/bin" $path)
-
-# ROOT's interpreter compiles dictionary headers when files are opened.
-# The HLS ap_int headers used by the L1 track trigger formats trip clang's
-# -Wformat (%llu with uint64_t) on every run. ROOT appends these flags to
-# its defaults; this only silences printf/scanf format checks in cling.
-export EXTRA_CLING_ARGS="-Wno-format"
-
-# cmsenv sets LC_ALL=C. In the C locale zle counts the multibyte prompt
-# character as several columns, so the command line gets garbled.
-# Keep C for everything except character handling.
-_cms_fix_locale() {
-  if [[ "$LC_ALL" == C ]]; then
-    unset LC_ALL
-    export LC_CTYPE=en_US.UTF-8
-  fi
-}
-
-add-zsh-hook precmd _cms_fix_locale
+for _conf in "$HOME"/.config/zsh/conf.d/*.zsh(N); do
+  source "$_conf"
+done
+unset _conf
 
 # ------------------------------------------------------------------
 # Autosuggestions

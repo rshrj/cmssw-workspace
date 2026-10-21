@@ -49,6 +49,7 @@ CMSSW source and build trees live on the VM's native Linux filesystem rather tha
 │   │   └── lazy-lock.json
 │   ├── install.sh
 │   ├── tools.txt
+│   ├── zsh/cms.zsh
 │   └── zshrc
 ├── lima/
 │   └── cmssw.yaml
@@ -57,7 +58,7 @@ CMSSW source and build trees live on the VM's native Linux filesystem rather tha
 └── README.md
 ```
 
-`guest/` holds what `cmsvm sync` installs into the VM: the pinned tools, `~/.zshrc`, the Neovim configuration and the `cmssw-el8` helper.
+`guest/` holds what `cmsvm sync` installs into the VM: the pinned tools, `~/.zshrc`, the CMS shell setup, the Neovim configuration and the `cmssw-el8` helper.
 
 ## Requirements
 
@@ -192,14 +193,26 @@ cmsvm sync
 
 It installs:
 
-- the conda-forge packages pinned in `guest/tools.txt` (Neovim, ripgrep, fzf, tree-sitter, clangd) under `~/.local/share/cmssw-workspace`, linked into `~/.local/bin`;
-- `guest/zshrc` as `~/.zshrc`, keeping a dated backup if the old one differed;
+- the conda-forge packages pinned in `guest/tools.txt` (Neovim, ripgrep, fzf, fd, tree-sitter, clangd, lazygit, shellcheck, bat, starship) under `~/.local/share/cmssw-workspace`, linked into `~/.local/bin`;
+- `guest/zsh/cms.zsh` as `~/.config/zsh/conf.d/cms.zsh`: the CMS environment (`cmsset_default.sh`), the el8 container fixes and the ROOT/cling flags;
+- `guest/zshrc` as `~/.zshrc`, keeping a dated backup if the old one differed; it sources `~/.config/zsh/conf.d/*.zsh`;
 - `guest/nvim/` as `~/.config/nvim`, then the plugins pinned in `lazy-lock.json` and the Tree-sitter parsers;
 - `guest/bin/cmssw-el8` as `~/bin/cmssw-el8`.
 
+`cmsvm sync` also copies the host's Git identity into the VM again, and brings the VM's provisioning scripts up to date with `lima/cmssw.yaml`. Lima runs them at every boot from the copy of the template made when the VM was created, so a VM created from an older template would keep running old scripts. When they differ, a running VM is restarted.
+
 conda-forge builds against an old glibc, so the same binaries also run in the el8 container. `cmsvm sync` is safe to re-run and only rebuilds the tools when `tools.txt` changes.
 
-The repository is the source of truth: `cmsvm sync` overwrites `~/.zshrc` and `~/.config/nvim`. Make changes in `guest/` and sync them. To update the plugins, run `:Lazy update` in the VM, then copy the new lock file back into the repository:
+The repository is the source of truth: `cmsvm sync` overwrites `~/.zshrc` and `~/.config/nvim`. Make changes in `guest/` and sync them.
+
+### Personal dotfiles
+
+To use your own shell and editor setup in the VM instead of `guest/zshrc` and `guest/nvim`, keep it in a dotfiles repository on the Mac with an executable `install.sh` at the top. When `~/dotfiles/install.sh` exists (or the directory named by `CMSVM_DOTFILES`), `cmsvm sync`:
+
+1. installs the tools and the CMS shell setup from `guest/` as usual, but leaves `~/.zshrc` and `~/.config/nvim` alone;
+2. copies the dotfiles to `~/dotfiles` in the VM (without `.git`) and runs `~/dotfiles/install.sh` there, with the guest tools on `PATH`.
+
+The dotfiles' `.zshrc` should source `~/.config/zsh/conf.d/*.zsh` to pick up the CMS setup. The copy in the VM is overwritten on every sync, so edit the dotfiles on the Mac. `CMSVM_DOTFILES=none cmsvm sync` goes back to `guest/`'s files. To update the plugins, run `:Lazy update` in the VM, then copy the new lock file back into the repository:
 
 ```bash
 scp lima-cmssw:.config/nvim/lazy-lock.json guest/nvim/
