@@ -128,7 +128,11 @@ ensure_lima_ssh_include() {
   mkdir -p "$ssh_dir"
   chmod 700 "$ssh_dir"
 
-  touch "$ssh_config"
+  # Create it if missing; touching an existing file would change its
+  # modification time on every run.
+  if [[ ! -e "$ssh_config" ]]; then
+    touch "$ssh_config"
+  fi
   chmod 600 "$ssh_config"
 
   tmp="$(mktemp)"
