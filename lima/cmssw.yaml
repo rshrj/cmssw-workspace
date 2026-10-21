@@ -131,6 +131,10 @@ provision:
         procps-ng \
         findutils
 
+      # A newer Python beside el9's 3.9, for editor tools that need >= 3.10
+      # (Neovim's Mason finds python3.12). /usr/bin/python3 stays 3.9.
+      dnf -y install python3.12
+
       # CMSSW / CMS EL9 build-time dependencies
       dnf -y install \
         gcc-c++ \

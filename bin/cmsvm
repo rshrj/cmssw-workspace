@@ -45,7 +45,15 @@ Usage:
   cmsvm mounts
 
 'cmsvm sync' installs the repository's guest/ files (tools, .zshrc,
-Neovim config, cmssw-el8) into the VM; 'cmsvm create' runs it too.
+Neovim config, cmssw-el8) into the VM; 'cmsvm create' runs it too. It
+also copies the host's Git identity again and brings the VM's
+provisioning scripts up to date with the template, which restarts a
+running VM when they changed.
+
+Personal dotfiles: when \$CMSVM_DOTFILES (default ~/dotfiles) has an
+install.sh, 'cmsvm sync' copies it to ~/dotfiles in the VM and runs it,
+and the dotfiles' .zshrc and Neovim config replace guest/'s. The CMS
+shell setup is installed either way. CMSVM_DOTFILES=none turns this off.
 
 Mounts are read-only unless --rw is given. GUEST_DIR defaults to
 /mnt/<name of HOST_DIR>. They are saved in config/mounts.local and
@@ -96,14 +104,18 @@ sync_git_identity() {
 
   echo "==> Syncing Git identity into guest"
 
+  # ssh joins its arguments into one command line for the remote shell,
+  # so quote the values for it ("Jane Doe" would otherwise lose "Doe").
+  # --replace-all also cleans up the duplicate entries that the unquoted
+  # version left behind.
   ssh "$SSH_ALIAS" \
-    git config --global user.name "$name"
+    "git config --global --replace-all user.name $(printf '%q' "$name")"
 
   ssh "$SSH_ALIAS" \
-    git config --global user.email "$email"
+    "git config --global --replace-all user.email $(printf '%q' "$email")"
 
   ssh "$SSH_ALIAS" \
-    git config --global user.github "$github"
+    "git config --global --replace-all user.github $(printf '%q' "$github")"
 }
 
 
@@ -122,13 +134,17 @@ ensure_lima_ssh_include() {
   tmp="$(mktemp)"
 
   # The Include must be outside any Host stanza.
-  # Putting it first guarantees that.
+  # Putting it first guarantees that. The blank lines that followed it are
+  # dropped too, so repeated runs don't pile them up.
   {
     printf '%s\n\n' "$include_line"
-    grep -vFx "$include_line" "$ssh_config" || true
+    { grep -vFx "$include_line" "$ssh_config" || true; } | sed '/./,$!d'
   } > "$tmp"
 
-  cat "$tmp" > "$ssh_config"
+  # Only write when something changed.
+  if ! cmp -s "$tmp" "$ssh_config"; then
+    cat "$tmp" > "$ssh_config"
+  fi
   rm -f "$tmp"
 
   chmod 600 "$ssh_config"
@@ -187,15 +203,73 @@ install_host_terminfo() {
 }
 
 
+# Personal dotfiles to install in the VM after guest/: $CMSVM_DOTFILES, or
+# ~/dotfiles when it exists. They need an executable install.sh at the top.
+# CMSVM_DOTFILES=none turns this off.
+dotfiles_dir() {
+  local dir="${CMSVM_DOTFILES:-$HOME/dotfiles}"
+
+  [[ "$dir" != none && -x "$dir/install.sh" ]] || return 1
+  printf '%s\n' "$dir"
+}
+
+
 # Copy guest/ into the VM and install it. See guest/install.sh.
 sync_guest() {
   local dest=".local/share/cmssw-workspace/guest"
+  local with_dotfiles=0
+
+  if dotfiles_dir >/dev/null; then
+    with_dotfiles=1
+  fi
 
   echo "==> Installing guest tools and configuration"
 
   ssh "$SSH_ALIAS" mkdir -p "$dest"
   rsync -a --delete "$REPO_ROOT/guest/" "$SSH_ALIAS:$dest/"
-  ssh "$SSH_ALIAS" bash "$dest/install.sh"
+  ssh "$SSH_ALIAS" "CMSVM_DOTFILES=$with_dotfiles bash $dest/install.sh"
+}
+
+
+# Copy the personal dotfiles to ~/dotfiles in the VM and run their
+# install.sh, which links their .zshrc, Neovim config and so on.
+sync_dotfiles() {
+  local dir
+
+  if ! dir="$(dotfiles_dir)"; then
+    return 0
+  fi
+
+  echo "==> Installing dotfiles from $dir"
+
+  rsync -a --delete --exclude .git "$dir/" "$SSH_ALIAS:dotfiles/"
+  # Non-interactive SSH: the guest tools in ~/.local/bin are not on PATH.
+  ssh "$SSH_ALIAS" 'PATH="$HOME/.local/bin:$PATH" "$HOME/dotfiles/install.sh"'
+}
+
+
+# Lima runs the provisioning scripts at every boot, from the copy of the
+# template made when the VM was created. Bring that copy up to date, so a
+# VM created from an older template stops running old scripts (an early
+# one rewrote ~/.zshrc at every boot). Restarts a running VM if needed.
+sync_provision() {
+  local current wanted
+
+  if ! instance_exists; then
+    return 0
+  fi
+
+  current="$(limactl template yq "$HOME/.lima/$INSTANCE/lima.yaml" '.provision')"
+  wanted="$(limactl template yq "$TEMPLATE" '.provision')"
+
+  if [[ "$current" == "$wanted" ]]; then
+    return 0
+  fi
+
+  # Lima blocks file reads in --set expressions, so pass the scripts inline.
+  edit_instance \
+    ".provision = $(limactl template yq "$TEMPLATE" '.provision | tojson(0)')" \
+    "update its provisioning scripts"
 }
 
 
@@ -243,6 +317,7 @@ check_mount_path() {
 # instances, so a running VM is stopped and started again.
 edit_instance() {
   local expr="$1"
+  local why="${2:-change mounts}"
   local was_running=0
 
   if ! instance_exists; then
@@ -252,7 +327,7 @@ edit_instance() {
 
   if [[ "$(instance_status)" == "Running" ]]; then
     was_running=1
-    echo "==> Stopping $INSTANCE to change mounts (open VM shells will close)"
+    echo "==> Stopping $INSTANCE to $why (open VM shells will close)"
     limactl stop "$INSTANCE"
   fi
 
@@ -554,6 +629,7 @@ case "${1:-}" in
     sync_git_identity
     install_host_terminfo
     sync_guest
+    sync_dotfiles
 
     echo
     echo "==> Running post-install checks"
@@ -597,7 +673,10 @@ case "${1:-}" in
     ;;
 
   sync)
+    sync_provision
+    sync_git_identity
     sync_guest
+    sync_dotfiles
     ;;
 
   doctor)

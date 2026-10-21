@@ -2,6 +2,9 @@
 #
 # Install the repository-managed guest files. `cmsvm sync` copies the
 # guest/ directory into the VM and runs this script there. Safe to re-run.
+#
+# With CMSVM_DOTFILES=1, personal dotfiles are installed afterwards and
+# provide ~/.zshrc and ~/.config/nvim, so those two are left alone here.
 
 set -euo pipefail
 
@@ -19,7 +22,9 @@ MAMBA="$STATE/micromamba-$MAMBA_VERSION"
 
 # Binaries from the tools environment that are linked into ~/.local/bin.
 # Only these names are touched there.
-TOOLS=(nvim rg fzf tree-sitter clangd clang-format)
+TOOLS=(nvim rg fzf tree-sitter clangd clang-format lazygit fd shellcheck bat starship)
+
+WITH_DOTFILES="${CMSVM_DOTFILES:-0}"
 
 mkdir -p "$STATE" "$HOME/.local/bin" "$HOME/bin" "$HOME/.config"
 
@@ -75,19 +80,35 @@ done
 
 echo "==> Shell and helpers"
 
-if [[ -f "$HOME/.zshrc" ]] && ! cmp -s "$SRC/zshrc" "$HOME/.zshrc"; then
+# The CMS setup, sourced by any ~/.zshrc that loads conf.d.
+mkdir -p "$HOME/.config/zsh/conf.d"
+install -m 644 "$SRC/zsh/cms.zsh" "$HOME/.config/zsh/conf.d/cms.zsh"
+install -m 755 "$SRC/bin/cmssw-el8" "$HOME/bin/cmssw-el8"
+
+if [[ "$WITH_DOTFILES" == 1 ]]; then
+  echo "    ~/.zshrc and ~/.config/nvim: left to the dotfiles"
+  echo
+  echo "Guest tools installed."
+  exit 0
+fi
+
+if [[ -f "$HOME/.zshrc" && ! -L "$HOME/.zshrc" ]] && ! cmp -s "$SRC/zshrc" "$HOME/.zshrc"; then
   backup="$HOME/.zshrc.bak-$(date +%Y%m%d-%H%M%S)"
   cp "$HOME/.zshrc" "$backup"
   echo "    previous .zshrc saved as $backup"
 fi
 
+# `install` replaces a symlink left by dotfiles rather than writing through it.
 install -m 644 "$SRC/zshrc" "$HOME/.zshrc"
-install -m 755 "$SRC/bin/cmssw-el8" "$HOME/bin/cmssw-el8"
 
 
 echo "==> Neovim configuration and plugins"
 
-# The repository is the source of truth for ~/.config/nvim.
+# The repository is the source of truth for ~/.config/nvim. A symlink left
+# by dotfiles is removed first, so rsync does not write into the dotfiles.
+if [[ -L "$HOME/.config/nvim" ]]; then
+  rm "$HOME/.config/nvim"
+fi
 rsync -a --delete "$SRC/nvim/" "$HOME/.config/nvim/"
 
 nvim="$HOME/.local/bin/nvim"

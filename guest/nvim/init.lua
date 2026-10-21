@@ -170,13 +170,13 @@ require("lazy").setup({
 -- $CMSSW_BASE; clangd finds it from any file below. Its compiler is a
 -- plain `clang++`, found through the PATH that cmsenv sets, so start nvim
 -- after cmsenv. --query-driver lets clangd ask the CMS compilers on CVMFS
--- for their system headers.
+-- for their system headers, and the system compilers for other projects.
 vim.lsp.config("clangd", {
   cmd = {
     "clangd",
     "--background-index",
     "--header-insertion=never",
-    "--query-driver=/cvmfs/cms.cern.ch/**/bin/*g++*,/cvmfs/cms.cern.ch/**/bin/clang++",
+    "--query-driver=/cvmfs/cms.cern.ch/**/bin/*g++*,/cvmfs/cms.cern.ch/**/bin/clang++,/usr/bin/cc,/usr/bin/c++,/usr/bin/gcc*,/usr/bin/g++*",
   },
   filetypes = { "c", "cpp" },
   root_markers = { "compile_commands.json", ".git" },
