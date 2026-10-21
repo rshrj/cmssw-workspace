@@ -22,7 +22,7 @@ MAMBA="$STATE/micromamba-$MAMBA_VERSION"
 
 # Binaries from the tools environment that are linked into ~/.local/bin.
 # Only these names are touched there.
-TOOLS=(nvim rg fzf tree-sitter clangd clang-format lazygit fd shellcheck bat starship)
+TOOLS=(nvim rg fzf tree-sitter clangd clang-format lazygit fd shellcheck bat delta starship)
 
 WITH_DOTFILES="${CMSVM_DOTFILES:-0}"
 

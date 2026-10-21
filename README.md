@@ -193,7 +193,7 @@ cmsvm sync
 
 It installs:
 
-- the conda-forge packages pinned in `guest/tools.txt` (Neovim, ripgrep, fzf, fd, tree-sitter, clangd, lazygit, shellcheck, bat, starship) under `~/.local/share/cmssw-workspace`, linked into `~/.local/bin`;
+- the conda-forge packages pinned in `guest/tools.txt` (Neovim, ripgrep, fzf, fd, tree-sitter, clangd, lazygit, shellcheck, bat, delta, starship) under `~/.local/share/cmssw-workspace`, linked into `~/.local/bin`;
 - `guest/zsh/cms.zsh` as `~/.config/zsh/conf.d/cms.zsh`: the CMS environment (`cmsset_default.sh`), the el8 container fixes and the ROOT/cling flags;
 - `guest/zshrc` as `~/.zshrc`, keeping a dated backup if the old one differed; it sources `~/.config/zsh/conf.d/*.zsh`;
 - `guest/nvim/` as `~/.config/nvim`, then the plugins pinned in `lazy-lock.json` and the Tree-sitter parsers;
