@@ -166,6 +166,8 @@ cmsvm stop
 cmsvm delete
 ```
 
+`cmsvm start`, and `cmsvm shell` when the VM is stopped, start the VM through a launchd job (`cmsvm.cmssw`), so it keeps running when you quit the terminal app it was started from. Use `cmsvm` rather than `limactl start` to start it: a VM started by `limactl start` from a terminal can go down, without a clean shutdown, when that terminal app quits. The VM does not start at login, and it keeps running until `cmsvm stop` or a host shutdown.
+
 The VM is disposable. Permanent configuration belongs in this repository rather than in manual changes to the Lima instance.
 
 ## Host directories

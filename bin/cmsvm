@@ -18,6 +18,10 @@ REPO_ROOT="$(
 TEMPLATE="$REPO_ROOT/lima/cmssw.yaml"
 LIMA_SSH_CONFIG="$HOME/.lima/$INSTANCE/ssh.config"
 
+# launchd job that runs the VM. See start_instance.
+LAUNCHD_LABEL="cmsvm.$INSTANCE"
+LAUNCHD_DOMAIN="gui/$(id -u)"
+
 # Host directories mounted into the VM. Machine-specific, so not tracked.
 # One mount per line: HOST_DIR<TAB>GUEST_DIR<TAB>ro|rw
 MOUNTS_FILE="$REPO_ROOT/config/mounts.local"
@@ -287,6 +291,112 @@ instance_status() {
 }
 
 
+# Start the VM from a launchd job instead of from this shell. macOS
+# groups a process with the app it was started from, and quitting the app
+# kills the group: a VM started in a Ghostty shell went down, without a
+# clean shutdown, when Ghostty was quit. Lima's own login autostart uses
+# the same kind of job but also boots the VM at every login.
+#
+# --progress shows the cloud-init log while waiting.
+start_instance() {
+  local dir="$HOME/.lima/$INSTANCE"
+  local plist="$dir/cmsvm-launchd.plist"
+  local events="$dir/ha.stdout.log"
+  local target="$LAUNCHD_DOMAIN/$LAUNCHD_LABEL"
+  local progress=0 shown=0 lines deadline
+  local args=(start --tty=false)
+
+  if [[ "${1:-}" == --progress ]]; then
+    progress=1
+    args+=(--progress)
+  fi
+
+  if ! instance_exists; then
+    echo "ERROR: instance '$INSTANCE' does not exist. Create it with: cmsvm create" >&2
+    return 1
+  fi
+
+  if [[ "$(instance_status)" == Running ]]; then
+    echo "$INSTANCE is already running."
+    return 0
+  fi
+
+  # --foreground makes limactl exec the host agent, which keeps the VM
+  # running, in the job's own process.
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$LAUNCHD_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(command -v limactl)</string>
+$(printf '    <string>%s</string>\n' "${args[@]}" "$INSTANCE" --foreground)
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>WorkingDirectory</key>
+  <string>$dir</string>
+  <key>StandardOutPath</key>
+  <string>$dir/cmsvm-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>$dir/cmsvm-launchd.log</string>
+</dict>
+</plist>
+EOF
+
+  # The job from the previous start stays loaded after the VM stops.
+  launchctl bootout "$target" 2>/dev/null || true
+  # Lima recreates the event log; don't let the last run's events count.
+  rm -f "$events"
+  launchctl bootstrap "$LAUNCHD_DOMAIN" "$plist"
+
+  echo "==> Waiting for $INSTANCE to boot"
+
+  deadline=$((SECONDS + 600))
+
+  while :; do
+    if (( progress )) && [[ -f "$events" ]]; then
+      lines=$(($(wc -l < "$events")))
+      if (( lines > shown )); then
+        sed -n "$((shown + 1)),${lines}p" "$events" |
+          jq -r '.status.cloudInitProgress.logLine // empty | "[cloud-init] " + .' ||
+          true
+        shown="$lines"
+      fi
+    fi
+
+    # With --progress, also wait for cloud-init to finish, as
+    # 'limactl start --progress' does.
+    if grep -qF '"running":true' "$events" 2>/dev/null &&
+      { (( ! progress )) || grep -qF '"completed":true' "$events"; }; then
+      return 0
+    fi
+
+    if grep -qF '"exiting":true' "$events" 2>/dev/null ||
+      ! launchctl print "$target" 2>/dev/null |
+        grep -qF 'last exit code = (never exited)'; then
+      echo "ERROR: $INSTANCE failed to start. See:" >&2
+      echo "  $dir/cmsvm-launchd.log" >&2
+      echo "  $dir/ha.stderr.log" >&2
+      return 1
+    fi
+
+    if (( SECONDS > deadline )); then
+      echo "ERROR: $INSTANCE did not finish booting in 10 minutes." >&2
+      echo "See: $dir/ha.stderr.log" >&2
+      return 1
+    fi
+
+    sleep 1
+  done
+}
+
+
 # yq expression that adds one mount to a Lima config.
 mount_set_expr() {
   local host="$1" guest="$2" mode="$3"
@@ -339,7 +449,7 @@ edit_instance() {
 
   if (( was_running )); then
     echo "==> Starting $INSTANCE"
-    limactl start "$INSTANCE"
+    start_instance
     close_lima_controlmaster
   fi
 }
@@ -619,9 +729,7 @@ case "${1:-}" in
 
     echo "==> Starting and provisioning: $INSTANCE"
 
-    limactl start \
-      --progress \
-      "$INSTANCE"
+    start_instance --progress
 
     echo "==> Recycling initial Lima SSH connection"
 
@@ -649,7 +757,7 @@ case "${1:-}" in
     ;;
 
   start)
-    limactl start "$INSTANCE"
+    start_instance
     ;;
 
   shell)
@@ -661,7 +769,7 @@ case "${1:-}" in
     )"
 
     if [[ "$status" != "Running" ]]; then
-      limactl start "$INSTANCE" >/dev/null
+      start_instance >/dev/null
     fi
 
     exec ssh "$SSH_ALIAS"
@@ -690,6 +798,7 @@ case "${1:-}" in
 
   stop)
     limactl stop "$INSTANCE"
+    launchctl bootout "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
     ;;
 
   status)
@@ -698,6 +807,7 @@ case "${1:-}" in
 
   delete)
     limactl stop "$INSTANCE" 2>/dev/null || true
+    launchctl bootout "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
     limactl delete "$INSTANCE"
     ;;
 
