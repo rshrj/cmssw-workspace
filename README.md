@@ -233,6 +233,16 @@ cmssw-el8 cmsRun config.py      # one command
 
 `cmssw-bootstrap --arch el8_…` runs in the container automatically. An el8 VM is not an option: the el8 aarch64 kernel uses 64 KB pages, which Apple Silicon does not support. See `docs/el8.md`.
 
+## Kerberos
+
+Provisioning writes `/etc/krb5.conf.d/cern.conf`, which makes `CERN.CH` the default realm and maps `.cern.ch` hosts to it. Get a ticket in the VM with your CERN username:
+
+```bash
+kinit <cern-username>           # same as <cern-username>@CERN.CH
+```
+
+The VM keeps tickets in KCM. `cmssw-el8` shares the KCM socket with the container and sets `KRB5CCNAME=KCM:`, so a ticket from either side works in both. An explicit `KRB5CCNAME` is left alone.
+
 ## CMSSW bootstrap
 
 Create a clean CMSSW development area explicitly:

@@ -41,6 +41,15 @@ for dir in /usr/share/zsh-autosuggestions /usr/share/zsh-syntax-highlighting; do
   fi
 done
 
+# The VM keeps Kerberos tickets in KCM (sssd-kcm), while the container
+# defaults to a /tmp file cache. Share the KCM socket so a `kinit` on
+# either side is seen by both.
+KCM_SOCKET="/run/.heim_org.h5l.kcm-socket"
+if [[ -S "$KCM_SOCKET" && -z "${KRB5CCNAME:-}" ]]; then
+  binds+=(-B "$KCM_SOCKET")
+  export KRB5CCNAME="KCM:"
+fi
+
 if [[ "${1:-}" == "--" ]]; then
   shift
 fi
