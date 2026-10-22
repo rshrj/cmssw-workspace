@@ -186,6 +186,27 @@ provision:
 
       cvmfs_config chksetup
 
+      echo "==> Configuring Kerberos for CERN.CH"
+
+      # /etc/krb5.conf includes /etc/krb5.conf.d/, so the stock file is left
+      # alone.
+      cat > /etc/krb5.conf.d/cern.conf <<'EOF'
+      [libdefaults]
+          default_realm = CERN.CH
+
+      [realms]
+          CERN.CH = {
+              default_domain = cern.ch
+              kdc = cerndc.cern.ch
+              admin_server = cerndc.cern.ch
+              kpasswd_server = cerndc.cern.ch
+          }
+
+      [domain_realm]
+          .cern.ch = CERN.CH
+          cern.ch = CERN.CH
+      EOF
+
       dnf clean all
 
   - mode: user
